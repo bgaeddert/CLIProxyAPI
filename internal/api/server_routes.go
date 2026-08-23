@@ -57,7 +57,7 @@ func (s *Server) setupRoutes() {
 	claudeCodeHandlers := claude.NewClaudeCodeAPIHandler(s.handlers)
 	openaiResponsesHandlers := openai.NewOpenAIResponsesAPIHandler(s.handlers)
 	s.codexLiveHandler = codexlive.NewHandler(s.handlers.AuthManager, s.cfg)
-	s.transcriptionHandler = newCodexTranscriptionHandler(s.handlers.AuthManager)
+	s.transcriptionHandler = newTranscriptionHandler(s.handlers.AuthManager)
 
 	// OpenAI compatible API routes
 	v1 := s.engine.Group("/v1")
