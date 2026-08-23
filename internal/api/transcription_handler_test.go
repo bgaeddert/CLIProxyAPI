@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"mime/multipart"
@@ -13,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
@@ -21,6 +23,57 @@ type transcriptionTestExecutor struct {
 	refreshCalls atomic.Int32
 	httpCalls    atomic.Int32
 }
+
+type antigravityTranscriptionTestExecutor struct {
+	responsePayload []byte
+	executeErr      error
+	request         coreexecutor.Request
+	options         coreexecutor.Options
+	selectedAuth    *auth.Auth
+	calls           atomic.Int32
+}
+
+func (*antigravityTranscriptionTestExecutor) Identifier() string { return "antigravity" }
+
+func (e *antigravityTranscriptionTestExecutor) Execute(_ context.Context, selected *auth.Auth, request coreexecutor.Request, options coreexecutor.Options) (coreexecutor.Response, error) {
+	e.calls.Add(1)
+	e.selectedAuth = selected.Clone()
+	e.request = request
+	e.options = options
+	if e.executeErr != nil {
+		return coreexecutor.Response{}, e.executeErr
+	}
+	return coreexecutor.Response{Payload: append([]byte(nil), e.responsePayload...)}, nil
+}
+
+func (*antigravityTranscriptionTestExecutor) ExecuteStream(context.Context, *auth.Auth, coreexecutor.Request, coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	return nil, nil
+}
+
+func (*antigravityTranscriptionTestExecutor) Refresh(_ context.Context, selected *auth.Auth) (*auth.Auth, error) {
+	return selected.Clone(), nil
+}
+
+func (*antigravityTranscriptionTestExecutor) CountTokens(context.Context, *auth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, nil
+}
+
+func (*antigravityTranscriptionTestExecutor) PrepareRequest(*http.Request, *auth.Auth) error {
+	return nil
+}
+
+func (*antigravityTranscriptionTestExecutor) HttpRequest(context.Context, *auth.Auth, *http.Request) (*http.Response, error) {
+	return nil, nil
+}
+
+type transcriptionStatusError struct {
+	status  int
+	message string
+}
+
+func (e transcriptionStatusError) Error() string { return e.message }
+
+func (e transcriptionStatusError) StatusCode() int { return e.status }
 
 func (*transcriptionTestExecutor) Identifier() string { return "codex" }
 
@@ -120,6 +173,41 @@ func invokeTranscriptionHandler(t *testing.T, handler *codexTranscriptionHandler
 	context.Request = request
 	handler.Handle(context)
 	return recorder
+}
+
+func invokeAntigravityTranscriptionHandler(t *testing.T, handler *antigravityTranscriptionHandler, request *http.Request) *httptest.ResponseRecorder {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	gin.SetMode(gin.TestMode)
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = request
+	handler.Handle(context)
+	return recorder
+}
+
+func newAntigravityTranscriptionTestHandler(t *testing.T, responsePayload []byte, executeErr error) (*antigravityTranscriptionHandler, *antigravityTranscriptionTestExecutor) {
+	t.Helper()
+	registryRef := registry.GetGlobalRegistry()
+	registryRef.RegisterClient("antigravity-oauth", "antigravity", []*registry.ModelInfo{{ID: antigravityTranscriptionDefaultModel}})
+	t.Cleanup(func() { registryRef.UnregisterClient("antigravity-oauth") })
+	manager := auth.NewManager(nil, nil, nil)
+	executor := &antigravityTranscriptionTestExecutor{
+		responsePayload: responsePayload,
+		executeErr:      executeErr,
+	}
+	manager.RegisterExecutor(executor)
+	if _, errRegister := manager.Register(context.Background(), &auth.Auth{
+		ID:       "antigravity-oauth",
+		Provider: "antigravity",
+		Status:   auth.StatusActive,
+		Metadata: map[string]any{
+			"access_token": "antigravity-token",
+			"project_id":   "project-123",
+		},
+	}); errRegister != nil {
+		t.Fatalf("register Antigravity auth: %v", errRegister)
+	}
+	return newAntigravityTranscriptionHandler(manager), executor
 }
 
 func TestCodexTranscriptionForwardsMultipartAndNormalizesJSON(t *testing.T) {
@@ -304,6 +392,114 @@ func TestCodexTranscriptionRefreshesOAuthAfterUnauthorized(t *testing.T) {
 	}
 	if calls.Load() != 2 || executor.refreshCalls.Load() != 1 {
 		t.Fatalf("upstream calls = %d, refresh calls = %d, want 2 and 1", calls.Load(), executor.refreshCalls.Load())
+	}
+}
+
+func TestAntigravityTranscriptionBuildsAudioRequestAndNormalizesJSON(t *testing.T) {
+	handler, executor := newAntigravityTranscriptionTestHandler(t, []byte(`{"candidates":[{"content":{"parts":[{"thought":true,"text":"hidden reasoning"},{"text":"hello from Google"}]}}]}`), nil)
+	recorder := invokeAntigravityTranscriptionHandler(t, handler, transcriptionRequest(t, map[string]string{
+		"model":           "gemini-transcribe",
+		"language":        "en",
+		"prompt":          "Use the speaker's spelling.",
+		"temperature":     "0",
+		"response_format": "json",
+	}, true))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", recorder.Code, recorder.Body.String())
+	}
+	if recorder.Body.String() != `{"text":"hello from Google"}` {
+		t.Fatalf("body = %q, want normalized JSON", recorder.Body.String())
+	}
+	if executor.calls.Load() != 1 {
+		t.Fatalf("executor calls = %d, want 1", executor.calls.Load())
+	}
+	if executor.selectedAuth == nil || executor.selectedAuth.Provider != "antigravity" {
+		t.Fatalf("selected auth = %#v, want Antigravity auth", executor.selectedAuth)
+	}
+	if executor.request.Model != antigravityTranscriptionDefaultModel {
+		t.Fatalf("upstream model = %q, want %q", executor.request.Model, antigravityTranscriptionDefaultModel)
+	}
+	if executor.options.SourceFormat != "gemini" || executor.options.ResponseFormat != "gemini" {
+		t.Fatalf("formats = %q -> %q, want gemini -> gemini", executor.options.SourceFormat, executor.options.ResponseFormat)
+	}
+
+	var payload struct {
+		Contents []struct {
+			Parts []struct {
+				Text       string `json:"text"`
+				InlineData struct {
+					MIMEType string `json:"mime_type"`
+					Data     string `json:"data"`
+				} `json:"inline_data"`
+			} `json:"parts"`
+		} `json:"contents"`
+		GenerationConfig struct {
+			Temperature float64 `json:"temperature"`
+		} `json:"generationConfig"`
+	}
+	if errUnmarshal := json.Unmarshal(executor.request.Payload, &payload); errUnmarshal != nil {
+		t.Fatalf("decode Antigravity payload: %v", errUnmarshal)
+	}
+	if len(payload.Contents) != 1 || len(payload.Contents[0].Parts) != 2 {
+		t.Fatalf("payload contents = %#v, want one user turn with text and audio", payload.Contents)
+	}
+	if !strings.Contains(payload.Contents[0].Parts[0].Text, "language is en") || !strings.Contains(payload.Contents[0].Parts[0].Text, "speaker's spelling") {
+		t.Fatalf("instruction = %q, want language and prompt", payload.Contents[0].Parts[0].Text)
+	}
+	inlineData := payload.Contents[0].Parts[1].InlineData
+	if inlineData.MIMEType != "audio/wav" {
+		t.Fatalf("audio MIME type = %q, want audio/wav", inlineData.MIMEType)
+	}
+	decoded, errDecode := base64.StdEncoding.DecodeString(inlineData.Data)
+	if errDecode != nil || string(decoded) != "RIFF-test-audio" {
+		t.Fatalf("decoded audio = %q, decode error = %v", decoded, errDecode)
+	}
+	if payload.GenerationConfig.Temperature != 0 {
+		t.Fatalf("temperature = %v, want 0", payload.GenerationConfig.Temperature)
+	}
+	if strings.Contains(string(executor.request.Payload), "antigravity-token") {
+		t.Fatal("payload leaked OAuth token")
+	}
+}
+
+func TestAntigravityTranscriptionNormalizesTextAndRejectsTimestamps(t *testing.T) {
+	handler, executor := newAntigravityTranscriptionTestHandler(t, []byte(`{"candidates":[{"content":{"parts":[{"text":"plain transcript"}]}}]}`), nil)
+	textRecorder := invokeAntigravityTranscriptionHandler(t, handler, transcriptionRequest(t, map[string]string{
+		"model":           "google-transcribe",
+		"response_format": "text",
+	}, true))
+	if textRecorder.Code != http.StatusOK || textRecorder.Body.String() != "plain transcript" {
+		t.Fatalf("text response = %d %q, want 200 plain transcript", textRecorder.Code, textRecorder.Body.String())
+	}
+	if got := textRecorder.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/plain") {
+		t.Fatalf("Content-Type = %q, want text/plain", got)
+	}
+
+	timestampRecorder := invokeAntigravityTranscriptionHandler(t, handler, transcriptionRequest(t, map[string]string{
+		"model":           "gemini-transcribe",
+		"response_format": "vtt",
+	}, true))
+	if timestampRecorder.Code != http.StatusBadRequest || !strings.Contains(timestampRecorder.Body.String(), "does not provide timestamps") {
+		t.Fatalf("timestamp response = %d %q, want unsupported timestamp error", timestampRecorder.Code, timestampRecorder.Body.String())
+	}
+	if executor.calls.Load() != 1 {
+		t.Fatalf("executor calls = %d, want timestamp request rejected before execution", executor.calls.Load())
+	}
+}
+
+func TestAntigravityTranscriptionConvertsUpstreamErrors(t *testing.T) {
+	handler, _ := newAntigravityTranscriptionTestHandler(t, nil, transcriptionStatusError{status: http.StatusUnauthorized, message: "invalid Antigravity access token"})
+	recorder := invokeAntigravityTranscriptionHandler(t, handler, transcriptionRequest(t, map[string]string{
+		"model": "gemini-3-flash-agent",
+	}, true))
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "antigravity_auth_error") || !strings.Contains(recorder.Body.String(), "invalid Antigravity access token") {
+		t.Fatalf("body = %q, want auth error details", recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "antigravity-token") {
+		t.Fatal("response leaked OAuth token")
 	}
 }
 
