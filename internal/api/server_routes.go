@@ -61,6 +61,7 @@ func (s *Server) setupRoutes() {
 	openaiResponsesHandlers := openai.NewOpenAIResponsesAPIHandler(s.handlers)
 	openaiResponsesHandlers.AccessManager = s.accessManager
 	s.codexLiveHandler = codexlive.NewHandler(s.handlers.AuthManager, s.cfg)
+	s.transcriptionHandler = newCodexTranscriptionHandler(s.handlers.AuthManager)
 
 	// OpenAI compatible API routes
 	v1 := s.engine.Group("/v1")
@@ -82,6 +83,7 @@ func (s *Server) setupRoutes() {
 		v1.GET("/videos/:request_id", openaiHandlers.XAIVideosRetrieve)
 		v1.POST("/audio/speech", openaiHandlers.AudioSpeech)
 		v1.POST("/tts", openaiHandlers.XAITTS)
+		v1.POST("/audio/transcriptions", s.transcriptionHandler.Handle)
 		v1.POST("/messages", claudeCodeHandlers.ClaudeMessages)
 		v1.POST("/messages/count_tokens", claudeCodeHandlers.ClaudeCountTokens)
 		v1.GET("/responses", openaiResponsesHandlers.ResponsesWebsocket)
