@@ -429,6 +429,13 @@ func (m *Manager) refreshAuth(ctx context.Context, id string) {
 	_, _ = m.refreshAuthForRequest(ctx, id, "")
 }
 
+// RefreshAuthForRequest refreshes one credential after an upstream
+// authorization failure and persists the refreshed credential through the
+// manager's normal lifecycle path.
+func (m *Manager) RefreshAuthForRequest(ctx context.Context, id, failedAccessToken string) (*Auth, error) {
+	return m.refreshAuthForRequest(ctx, id, failedAccessToken)
+}
+
 // refreshAuthForRequest performs a synchronous credential refresh for the given auth.
 // failedAccessToken lets concurrent callers reuse a refresh that already replaced the
 // access token that produced the unauthorized response.

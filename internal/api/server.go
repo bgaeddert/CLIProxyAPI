@@ -50,8 +50,9 @@ type Server struct {
 	muxHTTPListener *muxListener
 
 	// handlers contains the API handlers for processing requests.
-	handlers         *handlers.BaseAPIHandler
-	codexLiveHandler *codexlive.Handler
+	handlers             *handlers.BaseAPIHandler
+	codexLiveHandler     *codexlive.Handler
+	transcriptionHandler *codexTranscriptionHandler
 
 	// cfg holds the current server configuration.
 	cfg *config.Config
