@@ -55,7 +55,7 @@ type Server struct {
 	// handlers contains the API handlers for processing requests.
 	handlers             *handlers.BaseAPIHandler
 	codexLiveHandler     *codexlive.Handler
-	transcriptionHandler *codexTranscriptionHandler
+	transcriptionHandler *transcriptionHandler
 
 	// cfg holds the current server configuration.
 	cfgMu sync.RWMutex
