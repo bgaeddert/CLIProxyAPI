@@ -12,11 +12,13 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
 
 type transcriptionTestExecutor struct {
@@ -31,6 +33,12 @@ type antigravityTranscriptionTestExecutor struct {
 	options         coreexecutor.Options
 	selectedAuth    *auth.Auth
 	calls           atomic.Int32
+}
+
+type transcriptionUsagePluginFunc func(context.Context, usage.Record)
+
+func (f transcriptionUsagePluginFunc) HandleUsage(ctx context.Context, record usage.Record) {
+	f(ctx, record)
 }
 
 func (*antigravityTranscriptionTestExecutor) Identifier() string { return "antigravity" }
@@ -165,6 +173,28 @@ func transcriptionRequest(t *testing.T, fields map[string]string, includeFile bo
 	return request
 }
 
+func TestParseTranscriptionMultipartFormIsIdempotent(t *testing.T) {
+	request := transcriptionRequest(t, map[string]string{"model": "whisper-1"}, true)
+	recorder := httptest.NewRecorder()
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = request
+
+	if errParse := parseTranscriptionMultipartForm(c); errParse != nil {
+		t.Fatalf("first multipart parse: %v", errParse)
+	}
+	parsedForm := c.Request.MultipartForm
+	if parsedForm == nil {
+		t.Fatal("multipart form was not parsed")
+	}
+	if errParse := parseTranscriptionMultipartForm(c); errParse != nil {
+		t.Fatalf("second multipart parse: %v", errParse)
+	}
+	if c.Request.MultipartForm != parsedForm {
+		t.Fatal("second multipart parse replaced the parsed form")
+	}
+}
+
 func invokeTranscriptionHandler(t *testing.T, handler *codexTranscriptionHandler, request *http.Request) *httptest.ResponseRecorder {
 	t.Helper()
 	recorder := httptest.NewRecorder()
@@ -276,6 +306,54 @@ func TestCodexTranscriptionForwardsMultipartAndNormalizesJSON(t *testing.T) {
 	if response.Text != "hello from Codex" {
 		t.Fatalf("text = %q, want hello from Codex", response.Text)
 	}
+	gotAuth, ok := handler.authManager.GetByID("codex-oauth")
+	if !ok || gotAuth == nil {
+		t.Fatal("Codex auth was not retained by the manager")
+	}
+	if gotAuth.Success != 1 || gotAuth.Failed != 0 {
+		t.Fatalf("auth totals = success=%d failed=%d, want 1/0", gotAuth.Success, gotAuth.Failed)
+	}
+	var recentSuccess int64
+	for _, bucket := range gotAuth.RecentRequestsSnapshot(time.Now()) {
+		recentSuccess += bucket.Success
+	}
+	if recentSuccess != 1 {
+		t.Fatalf("recent successful requests = %d, want 1", recentSuccess)
+	}
+}
+
+func TestCodexTranscriptionPublishesUsageRecord(t *testing.T) {
+	handler, _, closeServer := newTranscriptionTestHandler(t, func(responseWriter http.ResponseWriter, _ *http.Request) {
+		responseWriter.Header().Set("Content-Type", "application/json")
+		_, _ = responseWriter.Write([]byte(`{"text":"usage test"}`))
+	}, false)
+	defer closeServer()
+
+	records := make(chan usage.Record, 1)
+	pluginName := "transcription-test-usage-" + strings.ReplaceAll(t.Name(), "/", "-")
+	usage.RegisterNamedPlugin(pluginName, transcriptionUsagePluginFunc(func(_ context.Context, record usage.Record) {
+		select {
+		case records <- record:
+		default:
+		}
+	}))
+	t.Cleanup(func() {
+		usage.RegisterNamedPlugin(pluginName, transcriptionUsagePluginFunc(func(context.Context, usage.Record) {}))
+	})
+
+	recorder := invokeTranscriptionHandler(t, handler, transcriptionRequest(t, map[string]string{"model": "whisper-1"}, true))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	select {
+	case record := <-records:
+		if record.Provider != "codex" || record.Model != "whisper-1" || record.AuthID != "codex-oauth" || record.Failed {
+			t.Fatalf("usage record = %#v, want successful Codex record", record)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Codex transcription usage record")
+	}
 }
 
 func TestCodexTranscriptionValidatesFileModelAndFormats(t *testing.T) {
@@ -368,6 +446,13 @@ func TestCodexTranscriptionConvertsUpstreamErrors(t *testing.T) {
 	if strings.Contains(recorder.Body.String(), "codex-token") {
 		t.Fatalf("response leaked OAuth token: %q", recorder.Body.String())
 	}
+	gotAuth, ok := handler.authManager.GetByID("codex-oauth")
+	if !ok || gotAuth == nil {
+		t.Fatal("Codex auth was not retained by the manager")
+	}
+	if gotAuth.Success != 0 || gotAuth.Failed != 1 {
+		t.Fatalf("auth totals = success=%d failed=%d, want 0/1", gotAuth.Success, gotAuth.Failed)
+	}
 }
 
 func TestCodexTranscriptionRefreshesOAuthAfterUnauthorized(t *testing.T) {
@@ -459,6 +544,13 @@ func TestAntigravityTranscriptionBuildsAudioRequestAndNormalizesJSON(t *testing.
 	}
 	if strings.Contains(string(executor.request.Payload), "antigravity-token") {
 		t.Fatal("payload leaked OAuth token")
+	}
+	gotAuth, ok := handler.authManager.GetByID("antigravity-oauth")
+	if !ok || gotAuth == nil {
+		t.Fatal("Antigravity auth was not retained by the manager")
+	}
+	if gotAuth.Success != 1 || gotAuth.Failed != 0 {
+		t.Fatalf("auth totals = success=%d failed=%d, want 1/0", gotAuth.Success, gotAuth.Failed)
 	}
 }
 

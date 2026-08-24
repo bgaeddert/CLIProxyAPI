@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	sdkhandlers "github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
@@ -40,25 +42,67 @@ var supportedAntigravityTranscriptionModels = map[string]string{
 }
 
 type transcriptionHandler struct {
+	apiHandlers *sdkhandlers.BaseAPIHandler
 	codex       *codexTranscriptionHandler
 	antigravity *antigravityTranscriptionHandler
 }
 
-func newTranscriptionHandler(authManager *auth.Manager) *transcriptionHandler {
+func newTranscriptionHandler(apiHandlers *sdkhandlers.BaseAPIHandler) *transcriptionHandler {
+	var authManager *auth.Manager
+	if apiHandlers != nil {
+		authManager = apiHandlers.AuthManager
+	}
 	return &transcriptionHandler{
+		apiHandlers: apiHandlers,
 		codex:       newCodexTranscriptionHandler(authManager),
 		antigravity: newAntigravityTranscriptionHandler(authManager),
 	}
 }
+
+func (h *transcriptionHandler) HandlerType() string { return "openai" }
+
+func (h *transcriptionHandler) Models() []map[string]any { return nil }
 
 func (h *transcriptionHandler) Handle(c *gin.Context) {
 	if h == nil {
 		writeTranscriptionError(c, http.StatusServiceUnavailable, "transcription handler unavailable", "transcription_unavailable")
 		return
 	}
-	if c != nil && c.Request != nil && strings.HasPrefix(strings.ToLower(c.GetHeader("Content-Type")), "multipart/form-data;") {
-		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, codexTranscriptionMaxRequest)
-		_ = c.Request.ParseMultipartForm(32 << 20)
+	if c == nil || c.Request == nil {
+		writeTranscriptionError(c, http.StatusBadRequest, "transcription request is missing", "invalid_request")
+		return
+	}
+
+	requestContext := c.Request.Context()
+	var cancel sdkhandlers.APIHandlerCancelFunc
+	var lifecycle *sdkhandlers.RequestLifecycle
+	if h.apiHandlers != nil {
+		requestContext, cancel = h.apiHandlers.GetContextWithCancel(h, c, context.Background())
+		c.Request = c.Request.WithContext(requestContext)
+	}
+
+	multipartErr := parseTranscriptionMultipartForm(c)
+	if h.apiHandlers != nil {
+		requestedModel := strings.ToLower(strings.TrimSpace(c.PostForm("model")))
+		if requestedModel == "" {
+			requestedModel = "transcription"
+		}
+		lifecycle = h.apiHandlers.BeginRequestLifecycle(requestContext, "openai", requestedModel, requestedModel, map[string]any{
+			cliproxyexecutor.RequestPathMetadataKey: "/v1/audio/transcriptions",
+		})
+		defer func() {
+			if lifecycle != nil {
+				lifecycle.Complete(c.Writer.Status())
+			}
+			if cancel != nil {
+				cancel()
+			}
+		}()
+	}
+	if multipartErr != nil {
+		status := transcriptionRequestErrorStatus(multipartErr)
+		writeTranscriptionError(c, status, "invalid multipart form: "+safeTranscriptionError(multipartErr), "invalid_request")
+		return
 	}
 	model := strings.ToLower(strings.TrimSpace(c.PostForm("model")))
 	if isAntigravityTranscriptionModel(model) {
@@ -66,6 +110,20 @@ func (h *transcriptionHandler) Handle(c *gin.Context) {
 		return
 	}
 	h.codex.Handle(c)
+}
+
+func parseTranscriptionMultipartForm(c *gin.Context) error {
+	if c == nil || c.Request == nil {
+		return errors.New("transcription request is missing")
+	}
+	if !strings.HasPrefix(strings.ToLower(c.GetHeader("Content-Type")), "multipart/form-data;") {
+		return errors.New("Content-Type must be multipart/form-data")
+	}
+	if c.Request.MultipartForm == nil {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, codexTranscriptionMaxRequest)
+		return c.Request.ParseMultipartForm(32 << 20)
+	}
+	return nil
 }
 
 func isAntigravityTranscriptionModel(model string) bool {
@@ -97,11 +155,7 @@ func (h *antigravityTranscriptionHandler) Handle(c *gin.Context) {
 	}
 	request, errParse := h.parseRequest(c)
 	if errParse != nil {
-		status := http.StatusBadRequest
-		var tooLarge *transcriptionRequestTooLargeError
-		if errors.As(errParse, &tooLarge) {
-			status = http.StatusRequestEntityTooLarge
-		}
+		status := transcriptionRequestErrorStatus(errParse)
 		writeTranscriptionError(c, status, errParse.Error(), "invalid_request")
 		return
 	}
@@ -144,11 +198,7 @@ func (h *antigravityTranscriptionHandler) parseRequest(c *gin.Context) (antigrav
 	if c == nil || c.Request == nil {
 		return antigravityTranscriptionRequest{}, errors.New("transcription request is missing")
 	}
-	if !strings.HasPrefix(strings.ToLower(c.GetHeader("Content-Type")), "multipart/form-data;") {
-		return antigravityTranscriptionRequest{}, errors.New("Content-Type must be multipart/form-data")
-	}
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, codexTranscriptionMaxRequest)
-	if errParse := c.Request.ParseMultipartForm(32 << 20); errParse != nil {
+	if errParse := parseTranscriptionMultipartForm(c); errParse != nil {
 		if strings.Contains(strings.ToLower(errParse.Error()), "request body too large") {
 			return antigravityTranscriptionRequest{}, &transcriptionRequestTooLargeError{}
 		}
@@ -238,6 +288,9 @@ func buildAntigravityTranscriptionPayload(fileHeader *multipart.FileHeader, lang
 		mimeType = mime.TypeByExtension(filepath.Ext(fileHeader.Filename))
 	}
 	if mimeType == "" {
+		mimeType = "audio/wav"
+	}
+	if mimeType == "audio/x-wav" {
 		mimeType = "audio/wav"
 	}
 

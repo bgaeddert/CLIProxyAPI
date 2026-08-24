@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 )
@@ -75,11 +76,7 @@ func (h *codexTranscriptionHandler) Handle(c *gin.Context) {
 
 	request, errParse := h.parseRequest(c)
 	if errParse != nil {
-		status := http.StatusBadRequest
-		var tooLarge *transcriptionRequestTooLargeError
-		if errors.As(errParse, &tooLarge) {
-			status = http.StatusRequestEntityTooLarge
-		}
+		status := transcriptionRequestErrorStatus(errParse)
 		writeTranscriptionError(c, status, errParse.Error(), "invalid_request")
 		return
 	}
@@ -105,32 +102,57 @@ func (h *codexTranscriptionHandler) Handle(c *gin.Context) {
 		return
 	}
 
-	response, errUpstream := h.doRequestWithRefresh(c.Request.Context(), selected, request)
+	accounting := newCodexTranscriptionAccounting(c.Request.Context(), h.authManager, request.model, selected)
+
+	response, refreshedAuth, errUpstream := h.doRequestWithRefresh(c.Request.Context(), selected, request)
+	accounting.setAuth(refreshedAuth)
 	if errUpstream != nil {
+		accounting.finish(http.StatusBadGateway, errUpstream)
 		writeTranscriptionError(c, http.StatusBadGateway, "Codex transcription upstream request failed: "+safeTranscriptionError(errUpstream), "upstream_error")
 		return
 	}
+	if response == nil {
+		errResponse := errors.New("Codex transcription upstream returned no response")
+		accounting.finish(http.StatusBadGateway, errResponse)
+		writeTranscriptionError(c, http.StatusBadGateway, errResponse.Error(), "upstream_error")
+		return
+	}
+	if response.Body == nil {
+		errResponse := errors.New("Codex transcription upstream returned an empty response body")
+		accounting.finish(http.StatusBadGateway, errResponse)
+		writeTranscriptionError(c, http.StatusBadGateway, errResponse.Error(), "upstream_error")
+		return
+	}
 	defer func() { _ = response.Body.Close() }()
+	accounting.observeResponse(response)
 
 	body, errRead := io.ReadAll(io.LimitReader(response.Body, codexTranscriptionMaxResponse+1))
 	if errRead != nil {
+		errResponse := errors.New("failed to read Codex transcription response")
+		accounting.finish(http.StatusBadGateway, errResponse)
 		writeTranscriptionError(c, http.StatusBadGateway, "failed to read Codex transcription response", "upstream_error")
 		return
 	}
 	if len(body) > codexTranscriptionMaxResponse {
+		errResponse := errors.New("Codex transcription response is too large")
+		accounting.finish(http.StatusBadGateway, errResponse)
 		writeTranscriptionError(c, http.StatusBadGateway, "Codex transcription response is too large", "upstream_error")
 		return
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		upstreamErr := newCodexTranscriptionHTTPError(response.StatusCode, body)
+		accounting.finish(response.StatusCode, upstreamErr)
 		handleTranscriptionUpstreamError(c, response.StatusCode, body)
 		return
 	}
 
 	normalizedBody, contentType, errNormalize := normalizeTranscriptionResponse(body, request.responseFormat)
 	if errNormalize != nil {
+		accounting.finish(http.StatusBadGateway, errNormalize)
 		writeTranscriptionError(c, http.StatusBadGateway, errNormalize.Error(), "invalid_upstream_response")
 		return
 	}
+	accounting.finish(response.StatusCode, nil)
 	c.Data(http.StatusOK, contentType, normalizedBody)
 }
 
@@ -138,11 +160,7 @@ func (h *codexTranscriptionHandler) parseRequest(c *gin.Context) (codexTranscrip
 	if c == nil || c.Request == nil {
 		return codexTranscriptionRequest{}, errors.New("transcription request is missing")
 	}
-	if !strings.HasPrefix(strings.ToLower(c.GetHeader("Content-Type")), "multipart/form-data;") {
-		return codexTranscriptionRequest{}, errors.New("Content-Type must be multipart/form-data")
-	}
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, codexTranscriptionMaxRequest)
-	if errParse := c.Request.ParseMultipartForm(32 << 20); errParse != nil {
+	if errParse := parseTranscriptionMultipartForm(c); errParse != nil {
 		if strings.Contains(strings.ToLower(errParse.Error()), "request body too large") {
 			return codexTranscriptionRequest{}, &transcriptionRequestTooLargeError{}
 		}
@@ -249,10 +267,10 @@ func buildCodexTranscriptionMultipart(fileHeader *multipart.FileHeader, language
 	return body.Bytes(), writer.FormDataContentType(), nil
 }
 
-func (h *codexTranscriptionHandler) doRequestWithRefresh(ctx context.Context, selected *auth.Auth, request codexTranscriptionRequest) (*http.Response, error) {
+func (h *codexTranscriptionHandler) doRequestWithRefresh(ctx context.Context, selected *auth.Auth, request codexTranscriptionRequest) (*http.Response, *auth.Auth, error) {
 	response, errRequest := h.doRequest(ctx, selected, request)
 	if errRequest != nil || response == nil || response.StatusCode != http.StatusUnauthorized || !hasCodexRefreshToken(selected) {
-		return response, errRequest
+		return response, selected, errRequest
 	}
 
 	failedAccessToken := codexAuthMetadataString(selected, "access_token", "accessToken")
@@ -261,9 +279,10 @@ func (h *codexTranscriptionHandler) doRequestWithRefresh(ctx context.Context, se
 	response.Body = io.NopCloser(bytes.NewReader(originalBody))
 	refreshed, errRefresh := h.authManager.RefreshAuthForRequest(ctx, selected.ID, failedAccessToken)
 	if errRefresh != nil || refreshed == nil {
-		return response, nil
+		return response, selected, nil
 	}
-	return h.doRequest(ctx, refreshed, request)
+	refreshedResponse, errRetry := h.doRequest(ctx, refreshed, request)
+	return refreshedResponse, refreshed, errRetry
 }
 
 func (h *codexTranscriptionHandler) doRequest(ctx context.Context, selected *auth.Auth, request codexTranscriptionRequest) (*http.Response, error) {
@@ -412,4 +431,122 @@ type transcriptionRequestTooLargeError struct{}
 
 func (*transcriptionRequestTooLargeError) Error() string {
 	return "audio upload exceeds the 50 MiB limit"
+}
+
+type codexTranscriptionHTTPError struct {
+	status  int
+	message string
+}
+
+func (e *codexTranscriptionHTTPError) Error() string {
+	if e == nil {
+		return "Codex transcription upstream request failed"
+	}
+	return e.message
+}
+
+func (e *codexTranscriptionHTTPError) StatusCode() int {
+	if e == nil {
+		return 0
+	}
+	return e.status
+}
+
+func transcriptionRequestErrorStatus(err error) int {
+	var tooLarge *transcriptionRequestTooLargeError
+	if errors.As(err, &tooLarge) || strings.Contains(strings.ToLower(safeTranscriptionError(err)), "request body too large") {
+		return http.StatusRequestEntityTooLarge
+	}
+	return http.StatusBadRequest
+}
+
+func newCodexTranscriptionHTTPError(status int, body []byte) error {
+	message := "Codex transcription upstream returned HTTP " + strconv.Itoa(status)
+	if detail := transcriptionUpstreamErrorDetail(body); detail != "" {
+		message += ": " + detail
+	}
+	return &codexTranscriptionHTTPError{status: status, message: message}
+}
+
+func codexTranscriptionResultError(err error, status int) *auth.Error {
+	if err == nil {
+		err = errors.New("Codex transcription request failed")
+	}
+	if status <= 0 {
+		status = http.StatusBadGateway
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return auth.NewRequestScopedError(safeTranscriptionError(err), status)
+	}
+	var authErr *auth.Error
+	if errors.As(err, &authErr) && authErr != nil {
+		return authErr
+	}
+	return &auth.Error{
+		Code:       "codex_transcription_error",
+		Message:    safeTranscriptionError(err),
+		HTTPStatus: status,
+	}
+}
+
+type codexTranscriptionAccounting struct {
+	ctx       context.Context
+	manager   *auth.Manager
+	model     string
+	auth      *auth.Auth
+	reporter  *helps.UsageReporter
+	completed bool
+}
+
+func newCodexTranscriptionAccounting(ctx context.Context, manager *auth.Manager, model string, selected *auth.Auth) *codexTranscriptionAccounting {
+	return &codexTranscriptionAccounting{
+		ctx:      ctx,
+		manager:  manager,
+		model:    model,
+		auth:     selected,
+		reporter: helps.NewUsageReporter(ctx, "codex", model, selected),
+	}
+}
+
+func (a *codexTranscriptionAccounting) setAuth(selected *auth.Auth) {
+	if a == nil || selected == nil {
+		return
+	}
+	a.auth = selected
+	a.reporter.UpdateAccessTokenFingerprint(selected)
+}
+
+func (a *codexTranscriptionAccounting) observeResponse(response *http.Response) {
+	if a == nil {
+		return
+	}
+	a.reporter.ObserveResponse(response)
+}
+
+func (a *codexTranscriptionAccounting) finish(status int, err error) {
+	if a == nil || a.completed {
+		return
+	}
+	a.completed = true
+	success := err == nil
+	if a.manager != nil && a.auth != nil {
+		result := auth.Result{
+			AuthID:   a.auth.ID,
+			Provider: "codex",
+			Model:    a.model,
+			Success:  success,
+			Options: cliproxyexecutor.Options{Metadata: map[string]any{
+				cliproxyexecutor.RequestedModelMetadataKey: a.model,
+			}},
+		}
+		if !success {
+			result.Error = codexTranscriptionResultError(err, status)
+		}
+		a.manager.MarkResult(a.ctx, result)
+	}
+	if success {
+		a.reporter.EnsurePublished(a.ctx)
+	} else {
+		a.reporter.PublishFailure(a.ctx, err)
+	}
 }
