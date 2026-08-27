@@ -237,6 +237,9 @@ func buildAntigravityTranscriptionPayload(fileHeader *multipart.FileHeader, lang
 	if mimeType == "" || mimeType == "application/octet-stream" {
 		mimeType = mime.TypeByExtension(filepath.Ext(fileHeader.Filename))
 	}
+	if strings.EqualFold(mimeType, "audio/x-wav") {
+		mimeType = "audio/wav"
+	}
 	if mimeType == "" {
 		mimeType = "audio/wav"
 	}
