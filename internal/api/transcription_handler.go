@@ -46,6 +46,7 @@ type codexTranscriptionHandler struct {
 type codexTranscriptionRequest struct {
 	model          string
 	language       string
+	prompt         string
 	responseFormat string
 	upstreamBody   []byte
 	contentType    string
@@ -186,20 +187,23 @@ func (h *codexTranscriptionHandler) parseRequest(c *gin.Context) (codexTranscrip
 		return codexTranscriptionRequest{}, &transcriptionRequestTooLargeError{}
 	}
 
-	upstreamBody, contentType, errBuild := buildCodexTranscriptionMultipart(fileHeader, strings.TrimSpace(c.PostForm("language")))
+	language := strings.TrimSpace(c.PostForm("language"))
+	prompt := c.PostForm("prompt")
+	upstreamBody, contentType, errBuild := buildCodexTranscriptionMultipart(fileHeader, language, prompt)
 	if errBuild != nil {
 		return codexTranscriptionRequest{}, errBuild
 	}
 	return codexTranscriptionRequest{
 		model:          model,
-		language:       strings.TrimSpace(c.PostForm("language")),
+		language:       language,
+		prompt:         prompt,
 		responseFormat: responseFormat,
 		upstreamBody:   upstreamBody,
 		contentType:    contentType,
 	}, nil
 }
 
-func buildCodexTranscriptionMultipart(fileHeader *multipart.FileHeader, language string) ([]byte, string, error) {
+func buildCodexTranscriptionMultipart(fileHeader *multipart.FileHeader, language, prompt string) ([]byte, string, error) {
 	if fileHeader == nil {
 		return nil, "", errors.New("file is required")
 	}
@@ -241,6 +245,11 @@ func buildCodexTranscriptionMultipart(fileHeader *multipart.FileHeader, language
 	if language != "" {
 		if errField := writer.WriteField("language", language); errField != nil {
 			return nil, "", fmt.Errorf("failed to write upstream language field: %w", errField)
+		}
+	}
+	if strings.TrimSpace(prompt) != "" {
+		if errField := writer.WriteField("prompt", prompt); errField != nil {
+			return nil, "", fmt.Errorf("failed to write upstream prompt field: %w", errField)
 		}
 	}
 	if errClose := writer.Close(); errClose != nil {

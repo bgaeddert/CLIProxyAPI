@@ -234,6 +234,9 @@ func TestCodexTranscriptionForwardsMultipartAndNormalizesJSON(t *testing.T) {
 		if got := request.FormValue("language"); got != "en" {
 			t.Errorf("language = %q, want en", got)
 		}
+		if got := request.FormValue("prompt"); got != "Prefer digits for numbers" {
+			t.Errorf("prompt = %q, want transcription prompt", got)
+		}
 		if got := request.FormValue("model"); got != "" {
 			t.Errorf("model = %q, want private upstream model field omitted", got)
 		}
@@ -260,6 +263,7 @@ func TestCodexTranscriptionForwardsMultipartAndNormalizesJSON(t *testing.T) {
 	recorder := invokeTranscriptionHandler(t, handler, transcriptionRequest(t, map[string]string{
 		"model":    "whisper-1",
 		"language": "en",
+		"prompt":   "Prefer digits for numbers",
 	}, true))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", recorder.Code, recorder.Body.String())
