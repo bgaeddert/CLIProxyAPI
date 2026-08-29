@@ -20,6 +20,12 @@ const (
 	xaiBuiltinVideo15PreviewID         = "grok-imagine-video-1.5-preview"
 	xaiBuiltinSpeechModelID            = "grok-tts"
 	xaiBuiltinSpeechVoiceModelID       = "grok-voice-tts-1.0"
+	codexBuiltinWhisperModelID                  = "whisper-1"
+	codexBuiltinTranscribeModelID               = "gpt-transcribe"
+	codexBuiltinGPT4OTranscribeModelID          = "gpt-4o-transcribe"
+	codexBuiltinGPT4OMiniTranscribeModelID      = "gpt-4o-mini-transcribe"
+	codexBuiltinGPT4OTranscribeDatedModelID     = "gpt-4o-transcribe-2025-12-15"
+	codexBuiltinGPT4OMiniTranscribeDatedModelID = "gpt-4o-mini-transcribe-2025-12-15"
 )
 
 // staticModelsJSON mirrors the top-level structure of models.json.
@@ -248,13 +254,41 @@ func GetXAIModels() []*ModelInfo {
 // not depend on remote models.json updates. Built-ins replace any matching IDs
 // already present in the provided slice.
 func WithCodexBuiltins(models []*ModelInfo) []*ModelInfo {
-	return upsertModelInfos(models,
+	extras := []*ModelInfo{
 		codexBuiltinImage15ModelInfo(),
 		codexBuiltinImageModelInfo(),
 		codexBuiltinImage25FlareModelInfo(),
 		codexBuiltinImage25SunburstModelInfo(),
 		codexBuiltinImage25ModelInfo(),
-	)
+	}
+	extras = append(extras, codexBuiltinTranscriptionModelInfos()...)
+	return upsertModelInfos(models, extras...)
+}
+
+func codexBuiltinTranscriptionModelInfos() []*ModelInfo {
+	modelIDs := []string{
+		codexBuiltinWhisperModelID,
+		codexBuiltinTranscribeModelID,
+		codexBuiltinGPT4OTranscribeModelID,
+		codexBuiltinGPT4OMiniTranscribeModelID,
+		codexBuiltinGPT4OTranscribeDatedModelID,
+		codexBuiltinGPT4OMiniTranscribeDatedModelID,
+	}
+	models := make([]*ModelInfo, 0, len(modelIDs))
+	for _, modelID := range modelIDs {
+		models = append(models, &ModelInfo{
+			ID:                        modelID,
+			Object:                    "model",
+			Created:                   1704067200, // 2024-01-01
+			OwnedBy:                   "openai",
+			Type:                      OpenAITranscriptionModelType,
+			DisplayName:               modelID,
+			Version:                   modelID,
+			SupportedInputModalities:  []string{"audio"},
+			SupportedOutputModalities: []string{"text"},
+		})
+	}
+	return models
 }
 
 // WithXAIBuiltins injects hard-coded xAI image, video, and speech model definitions
