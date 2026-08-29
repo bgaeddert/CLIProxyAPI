@@ -18,6 +18,9 @@ import (
 // OpenAIImageModelType marks models that are callable through OpenAI-compatible image endpoints.
 const OpenAIImageModelType = "openai-image"
 
+// OpenAITranscriptionModelType marks models that are callable through the OpenAI-compatible audio transcription endpoint.
+const OpenAITranscriptionModelType = "openai-transcription"
+
 const (
 	DefaultClaudeMaxInputTokens  = 200000
 	DefaultClaudeMaxOutputTokens = 64000

@@ -111,3 +111,38 @@ func TestAntigravityWebSearchModelForRequiresRequestedModelCapability(t *testing
 		t.Fatalf("unknown model should not get Antigravity web search model, got %q", got)
 	}
 }
+
+func TestWithCodexBuiltinsIncludesTranscriptionModels(t *testing.T) {
+	wantIDs := []string{
+		"whisper-1",
+		"gpt-transcribe",
+		"gpt-4o-transcribe",
+		"gpt-4o-mini-transcribe",
+		"gpt-4o-transcribe-2025-12-15",
+		"gpt-4o-mini-transcribe-2025-12-15",
+	}
+
+	models := WithCodexBuiltins(nil)
+	byID := make(map[string]*ModelInfo, len(models))
+	for _, model := range models {
+		if model != nil {
+			byID[model.ID] = model
+		}
+	}
+
+	for _, id := range wantIDs {
+		model, ok := byID[id]
+		if !ok {
+			t.Fatalf("transcription model %q was not registered", id)
+		}
+		if model.Type != OpenAITranscriptionModelType {
+			t.Errorf("%s type = %q, want %q", id, model.Type, OpenAITranscriptionModelType)
+		}
+		if len(model.SupportedInputModalities) != 1 || model.SupportedInputModalities[0] != "audio" {
+			t.Errorf("%s input modalities = %#v, want [audio]", id, model.SupportedInputModalities)
+		}
+		if len(model.SupportedOutputModalities) != 1 || model.SupportedOutputModalities[0] != "text" {
+			t.Errorf("%s output modalities = %#v, want [text]", id, model.SupportedOutputModalities)
+		}
+	}
+}
