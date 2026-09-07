@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
@@ -40,14 +41,16 @@ var supportedAntigravityTranscriptionModels = map[string]string{
 }
 
 type transcriptionHandler struct {
-	codex       *codexTranscriptionHandler
-	antigravity *antigravityTranscriptionHandler
+	codex        *codexTranscriptionHandler
+	antigravity  *antigravityTranscriptionHandler
+	openAICompat *openAICompatTranscriptionHandler
 }
 
 func newTranscriptionHandler(authManager *auth.Manager) *transcriptionHandler {
 	return &transcriptionHandler{
-		codex:       newCodexTranscriptionHandler(authManager),
-		antigravity: newAntigravityTranscriptionHandler(authManager),
+		codex:        newCodexTranscriptionHandler(authManager),
+		antigravity:  newAntigravityTranscriptionHandler(authManager),
+		openAICompat: newOpenAICompatTranscriptionHandler(authManager),
 	}
 }
 
@@ -61,11 +64,33 @@ func (h *transcriptionHandler) Handle(c *gin.Context) {
 		_ = c.Request.ParseMultipartForm(32 << 20)
 	}
 	model := strings.ToLower(strings.TrimSpace(c.PostForm("model")))
+	if isOpenAICompatTranscriptionModel(model) {
+		h.openAICompat.Handle(c)
+		return
+	}
 	if isAntigravityTranscriptionModel(model) {
 		h.antigravity.Handle(c)
 		return
 	}
 	h.codex.Handle(c)
+}
+
+func isOpenAICompatTranscriptionModel(model string) bool {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return false
+	}
+	info := registry.LookupModelInfo(model)
+	if !registry.ModelSupportsTranscriptionEndpoints(info) {
+		return false
+	}
+	for _, provider := range registry.GetGlobalRegistry().GetModelProviders(model) {
+		provider = strings.ToLower(strings.TrimSpace(provider))
+		if provider == "openai-compatibility" || strings.HasPrefix(provider, "openai-compatible-") {
+			return true
+		}
+	}
+	return false
 }
 
 func isAntigravityTranscriptionModel(model string) bool {

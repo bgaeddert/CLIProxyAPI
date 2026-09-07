@@ -263,7 +263,7 @@ func applyCodexClientModelMetadata(entry map[string]any, id string, model map[st
 		if contextWindow <= 0 && info.ContextLength > 0 {
 			contextWindow = info.ContextLength
 		}
-		if info.Type == registry.OpenAIImageModelType {
+		if registry.ModelSupportsImageEndpoints(info) {
 			entry["visibility"] = "hide"
 			delete(entry, "input_modalities")
 			delete(entry, "supports_image_detail_original")

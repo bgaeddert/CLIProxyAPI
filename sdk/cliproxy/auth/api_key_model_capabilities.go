@@ -235,14 +235,14 @@ func compileConfiguredModelCapabilities[T interface {
 func compileOpenAICompatibleModelCapabilities(out map[string][]apiKeyModelCapabilityRoute, models []internalconfig.OpenAICompatibilityModel) {
 	for i := range models {
 		support := models[i].Thinking
-		if support == nil && !models[i].Image {
+		if support == nil && !models[i].Image && !models[i].Transcription {
 			support = &registry.ThinkingSupport{Levels: []string{"low", "medium", "high"}}
 		}
-		addConfiguredModelCapability(out, models[i].Name, models[i].Alias, "openai-compatibility", support, models[i].IsCompat)
+		addConfiguredModelCapability(out, models[i].Name, models[i].Alias, registry.OpenAICompatibilityModelType, support, models[i].IsCompat, models[i])
 	}
 }
 
-func addConfiguredModelCapability(out map[string][]apiKeyModelCapabilityRoute, name, alias, modelType string, support *registry.ThinkingSupport, isCompat bool) {
+func addConfiguredModelCapability(out map[string][]apiKeyModelCapabilityRoute, name, alias, modelType string, support *registry.ThinkingSupport, isCompat bool, configuredModel ...internalconfig.OpenAICompatibilityModel) {
 	name = strings.TrimSpace(name)
 	alias = strings.TrimSpace(alias)
 	if name == "" {
@@ -255,6 +255,9 @@ func addConfiguredModelCapability(out map[string][]apiKeyModelCapabilityRoute, n
 		return
 	}
 	modelInfo := modelconfig.ResolveModelInfo(name, modelType, support)
+	if len(configuredModel) > 0 {
+		modelconfig.ApplyOpenAICompatibilityCapabilities(modelInfo, configuredModel[0])
+	}
 	modelInfo.IsCompat = isCompat
 	route := apiKeyModelCapabilityRoute{upstreamModel: name, modelInfo: modelInfo}
 	seenKeys := make(map[string]struct{})

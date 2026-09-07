@@ -21,6 +21,9 @@ const OpenAIImageModelType = "openai-image"
 // OpenAITranscriptionModelType marks models that are callable through the OpenAI-compatible audio transcription endpoint.
 const OpenAITranscriptionModelType = "openai-transcription"
 
+// OpenAICompatibilityModelType marks models routed through an OpenAI-compatible provider.
+const OpenAICompatibilityModelType = "openai-compatibility"
+
 const (
 	DefaultClaudeMaxInputTokens  = 200000
 	DefaultClaudeMaxOutputTokens = 64000
@@ -68,6 +71,10 @@ type ModelInfo struct {
 	// SupportsWebSearch indicates this Antigravity model is listed by
 	// fetchAvailableModels.webSearchModelIds and can execute native googleSearch.
 	SupportsWebSearch bool `json:"supports_web_search,omitempty"`
+	// SupportsImageEndpoints indicates that this model may receive /v1/images requests.
+	SupportsImageEndpoints bool `json:"supports_image_endpoints,omitempty"`
+	// SupportsTranscriptionEndpoints indicates that this model may receive /v1/audio/transcriptions requests.
+	SupportsTranscriptionEndpoints bool `json:"supports_transcription_endpoints,omitempty"`
 
 	// Thinking holds provider-specific reasoning/thinking budget capabilities.
 	// This is optional and currently used for Gemini thinking budget normalization.
@@ -84,6 +91,18 @@ type ModelInfo struct {
 	// IsCompat enables compatibility handling for this configured API-key model.
 	// It is internal metadata and is not exposed in model listings.
 	IsCompat bool `json:"-"`
+}
+
+// ModelSupportsImageEndpoints reports whether a model is enabled for image endpoints.
+// The type check preserves compatibility with older model definitions.
+func ModelSupportsImageEndpoints(model *ModelInfo) bool {
+	return model != nil && (model.SupportsImageEndpoints || model.Type == OpenAIImageModelType)
+}
+
+// ModelSupportsTranscriptionEndpoints reports whether a model is enabled for transcription endpoints.
+// The type check preserves compatibility with older model definitions.
+func ModelSupportsTranscriptionEndpoints(model *ModelInfo) bool {
+	return model != nil && (model.SupportsTranscriptionEndpoints || model.Type == OpenAITranscriptionModelType)
 }
 
 // ModelConfig holds optional runtime overrides for a model definition.

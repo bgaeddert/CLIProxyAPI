@@ -29,11 +29,13 @@ import (
 )
 
 const (
-	openAICompatImageHandlerType            = "openai-image"
-	openAICompatImagesGenerationsPath       = "/images/generations"
-	openAICompatImagesEditsPath             = "/images/edits"
-	openAICompatDefaultImageEndpoint        = openAICompatImagesGenerationsPath
-	openAICompatMultipartMemory       int64 = 32 << 20
+	openAICompatImageHandlerType               = "openai-image"
+	openAICompatTranscriptionHandlerType       = "openai-transcription"
+	openAICompatImagesGenerationsPath          = "/images/generations"
+	openAICompatImagesEditsPath                = "/images/edits"
+	openAICompatDefaultImageEndpoint           = openAICompatImagesGenerationsPath
+	openAICompatTranscriptionPath              = "/audio/transcriptions"
+	openAICompatMultipartMemory          int64 = 32 << 20
 )
 
 // OpenAICompatExecutor implements a stateless executor for OpenAI-compatible providers.
@@ -86,6 +88,9 @@ func (e *OpenAICompatExecutor) HttpRequest(ctx context.Context, auth *cliproxyau
 }
 
 func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+	if endpointPath := openAICompatTranscriptionEndpointPath(opts); endpointPath != "" {
+		return e.executeTranscription(ctx, auth, req, opts, endpointPath)
+	}
 	if endpointPath := openAICompatImageEndpointPath(opts); endpointPath != "" {
 		return e.executeImages(ctx, auth, req, opts, endpointPath)
 	}
@@ -227,7 +232,7 @@ func (e *OpenAICompatExecutor) executeImages(ctx context.Context, auth *cliproxy
 		return resp, err
 	}
 
-	payload, contentType, errPrepare := prepareOpenAICompatImagesPayload(req.Payload, baseModel, opts.Headers.Get("Content-Type"), false)
+	payload, contentType, errPrepare := prepareOpenAICompatMultipartPayload(req.Payload, baseModel, opts.Headers.Get("Content-Type"), false)
 	if errPrepare != nil {
 		err = errPrepare
 		return resp, err
@@ -304,7 +309,97 @@ func (e *OpenAICompatExecutor) executeImages(ctx context.Context, auth *cliproxy
 	return resp, nil
 }
 
+func (e *OpenAICompatExecutor) executeTranscription(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, endpointPath string) (resp cliproxyexecutor.Response, err error) {
+	baseModel := thinking.ParseSuffix(req.Model).ModelName
+
+	reporter := helps.NewExecutorUsageReporter(ctx, e, baseModel, auth)
+	defer reporter.TrackFailure(ctx, &err)
+
+	baseURL, apiKey := e.resolveCredentials(auth)
+	if baseURL == "" {
+		err = statusErr{code: http.StatusUnauthorized, msg: "missing provider baseURL"}
+		return resp, err
+	}
+
+	payload, contentType, errPrepare := prepareOpenAICompatMultipartPayload(req.Payload, baseModel, opts.Headers.Get("Content-Type"), false)
+	if errPrepare != nil {
+		err = errPrepare
+		return resp, err
+	}
+	if contentType == "" {
+		contentType = "application/json"
+	}
+
+	url := strings.TrimSuffix(baseURL, "/") + endpointPath
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return resp, err
+	}
+	httpReq.Header.Set("Content-Type", contentType)
+	if apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	httpReq.Header.Set("User-Agent", "cli-proxy-openai-compat")
+	var attrs map[string]string
+	if auth != nil {
+		attrs = auth.Attributes
+	}
+	util.ApplyCustomHeadersFromAttrs(httpReq, attrs, opts.Headers)
+	var authID, authLabel, authType, authValue string
+	if auth != nil {
+		authID = auth.ID
+		authLabel = auth.Label
+		authType, authValue = auth.AccountInfo()
+	}
+	helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
+		URL:       url,
+		Method:    http.MethodPost,
+		Headers:   httpReq.Header.Clone(),
+		Body:      payload,
+		Provider:  e.Identifier(),
+		AuthID:    authID,
+		AuthLabel: authLabel,
+		AuthType:  authType,
+		AuthValue: authValue,
+	})
+
+	httpClient := helps.NewProxyAwareHTTPClient(ctx, e.cfg, auth, 0)
+	httpClient = reporter.TrackHTTPClient(httpClient)
+	httpResp, err := httpClient.Do(httpReq)
+	if err != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, err)
+		return resp, err
+	}
+	defer func() {
+		if errClose := httpResp.Body.Close(); errClose != nil {
+			log.Errorf("openai compat executor: close response body error: %v", errClose)
+		}
+	}()
+	helps.RecordAPIResponseMetadata(ctx, e.cfg, httpResp.StatusCode, httpResp.Header.Clone())
+
+	body, errRead := io.ReadAll(httpResp.Body)
+	if errRead != nil {
+		helps.RecordAPIResponseError(ctx, e.cfg, errRead)
+		err = errRead
+		return resp, err
+	}
+	helps.AppendAPIResponseChunk(ctx, e.cfg, body)
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+		helps.LogWithRequestID(ctx).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, helps.SummarizeErrorBody(httpResp.Header.Get("Content-Type"), body))
+		err = newOpenAICompatStatusError(httpResp.StatusCode, httpResp.Header, body)
+		return resp, err
+	}
+
+	reporter.Publish(ctx, helps.ParseOpenAIUsage(body))
+	reporter.EnsurePublished(ctx)
+	resp = cliproxyexecutor.Response{Payload: body, Headers: httpResp.Header.Clone()}
+	return resp, nil
+}
+
 func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
+	if openAICompatTranscriptionEndpointPath(opts) != "" {
+		return nil, statusErr{code: http.StatusBadRequest, msg: "streaming transcription is not supported"}
+	}
 	if endpointPath := openAICompatImageEndpointPath(opts); endpointPath != "" {
 		return e.executeImagesStream(ctx, auth, req, opts, endpointPath)
 	}
@@ -582,7 +677,7 @@ func (e *OpenAICompatExecutor) executeImagesStream(ctx context.Context, auth *cl
 		return nil, err
 	}
 
-	payload, contentType, errPrepare := prepareOpenAICompatImagesPayload(req.Payload, baseModel, opts.Headers.Get("Content-Type"), true)
+	payload, contentType, errPrepare := prepareOpenAICompatMultipartPayload(req.Payload, baseModel, opts.Headers.Get("Content-Type"), true)
 	if errPrepare != nil {
 		err = errPrepare
 		return nil, err
@@ -766,7 +861,14 @@ func openAICompatImageEndpointPath(opts cliproxyexecutor.Options) string {
 	return openAICompatDefaultImageEndpoint
 }
 
-func prepareOpenAICompatImagesPayload(payload []byte, model string, contentType string, stream bool) ([]byte, string, error) {
+func openAICompatTranscriptionEndpointPath(opts cliproxyexecutor.Options) string {
+	if opts.SourceFormat.String() != openAICompatTranscriptionHandlerType {
+		return ""
+	}
+	return openAICompatTranscriptionPath
+}
+
+func prepareOpenAICompatMultipartPayload(payload []byte, model string, contentType string, stream bool) ([]byte, string, error) {
 	model = strings.TrimSpace(model)
 	contentType = strings.TrimSpace(contentType)
 	if json.Valid(payload) {
@@ -789,7 +891,11 @@ func prepareOpenAICompatImagesPayload(payload []byte, model string, contentType 
 	if boundary == "" {
 		return nil, "", fmt.Errorf("multipart boundary is missing")
 	}
-	return rewriteOpenAICompatImagesMultipartPayload(payload, model, boundary, stream)
+	return rewriteOpenAICompatMultipartPayload(payload, model, boundary, stream)
+}
+
+func prepareOpenAICompatImagesPayload(payload []byte, model string, contentType string, stream bool) ([]byte, string, error) {
+	return prepareOpenAICompatMultipartPayload(payload, model, contentType, stream)
 }
 
 func cloneOpenAICompatMIMEHeader(src textproto.MIMEHeader) textproto.MIMEHeader {
@@ -800,7 +906,7 @@ func cloneOpenAICompatMIMEHeader(src textproto.MIMEHeader) textproto.MIMEHeader 
 	return dst
 }
 
-func rewriteOpenAICompatImagesMultipartPayload(payload []byte, model string, boundary string, stream bool) ([]byte, string, error) {
+func rewriteOpenAICompatMultipartPayload(payload []byte, model string, boundary string, stream bool) ([]byte, string, error) {
 	reader := multipart.NewReader(bytes.NewReader(payload), boundary)
 	form, errRead := reader.ReadForm(openAICompatMultipartMemory)
 	if errRead != nil {

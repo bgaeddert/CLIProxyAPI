@@ -37,6 +37,17 @@ func TestComputeOpenAICompatModelsHash_IncludesImageFlag(t *testing.T) {
 	}
 }
 
+func TestComputeOpenAICompatModelsHash_IncludesTranscriptionFlag(t *testing.T) {
+	textModel := ComputeOpenAICompatModelsHash([]config.OpenAICompatibilityModel{{Name: "asr-model", Alias: "asr"}})
+	transcriptionModel := ComputeOpenAICompatModelsHash([]config.OpenAICompatibilityModel{{Name: "asr-model", Alias: "asr", Transcription: true}})
+	if textModel == "" || transcriptionModel == "" {
+		t.Fatal("hashes should not be empty")
+	}
+	if textModel == transcriptionModel {
+		t.Fatal("hash should change when transcription flag changes")
+	}
+}
+
 func TestComputeOpenAICompatModelsHashIncludesModalities(t *testing.T) {
 	base := []config.OpenAICompatibilityModel{{Name: "model", InputModalities: []string{"text"}, OutputModalities: []string{"text"}}}
 	inputChanged := []config.OpenAICompatibilityModel{{Name: "model", InputModalities: []string{"text", "image"}, OutputModalities: []string{"text"}}}

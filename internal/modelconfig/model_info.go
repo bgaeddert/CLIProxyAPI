@@ -3,6 +3,7 @@ package modelconfig
 import (
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 )
@@ -24,6 +25,59 @@ func ResolveModelInfo(name, modelType string, support *registry.ThinkingSupport)
 	}
 	info.UserDefined = false
 	return info
+}
+
+// ApplyOpenAICompatibilityCapabilities applies the endpoint capabilities declared
+// for a configured OpenAI-compatible model to its registry snapshot.
+func ApplyOpenAICompatibilityCapabilities(info *registry.ModelInfo, model config.OpenAICompatibilityModel) {
+	if info == nil {
+		return
+	}
+
+	info.Type = registry.OpenAICompatibilityModelType
+	info.SupportsImageEndpoints = model.Image
+	info.SupportsTranscriptionEndpoints = model.Transcription
+	switch {
+	case model.Image && !model.Transcription:
+		info.Type = registry.OpenAIImageModelType
+	case model.Transcription && !model.Image:
+		info.Type = registry.OpenAITranscriptionModelType
+	}
+
+	var requiredInput, requiredOutput []string
+	if model.Transcription {
+		requiredInput = []string{"audio"}
+		requiredOutput = []string{"text"}
+	}
+	info.SupportedInputModalities = EnsureModalities(model.InputModalities, requiredInput...)
+	info.SupportedOutputModalities = EnsureModalities(model.OutputModalities, requiredOutput...)
+}
+
+// EnsureModalities normalizes modality names and appends required non-empty values.
+func EnsureModalities(raw []string, required ...string) []string {
+	out := make([]string, 0, len(raw)+len(required))
+	seen := make(map[string]struct{}, len(raw)+len(required))
+	appendValue := func(value string) {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" {
+			return
+		}
+		if _, exists := seen[value]; exists {
+			return
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	for _, value := range raw {
+		appendValue(value)
+	}
+	for _, value := range required {
+		appendValue(value)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // NormalizeThinkingSupport clones and normalizes configured reasoning levels.

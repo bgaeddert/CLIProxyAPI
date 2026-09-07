@@ -719,47 +719,19 @@ func buildOpenAICompatibilityConfigModels(compat *config.OpenAICompatibility) []
 	models := make([]*ModelInfo, 0, len(compat.Models))
 	for i := range compat.Models {
 		model := compat.Models[i]
-		modelType := "openai-compatibility"
-		if model.Image {
-			modelType = registry.OpenAIImageModelType
-		}
-		info := buildConfiguredModelInfo(model, compat.Name, modelType, now, strings.TrimSpace(model.Alias), false)
+		info := buildConfiguredModelInfo(model, compat.Name, registry.OpenAICompatibilityModelType, now, strings.TrimSpace(model.Alias), false)
 		if info == nil {
 			continue
 		}
+		modelconfig.ApplyOpenAICompatibilityCapabilities(info, model)
 		thinkingSupport := model.Thinking
-		if thinkingSupport == nil && !model.Image {
+		if thinkingSupport == nil && !model.Image && !model.Transcription {
 			thinkingSupport = &registry.ThinkingSupport{Levels: []string{"low", "medium", "high"}}
 		}
 		info.Thinking = modelconfig.NormalizeThinkingSupport(thinkingSupport)
-		info.SupportedInputModalities = normalizeCompatConfigModalities(model.InputModalities)
-		info.SupportedOutputModalities = normalizeCompatConfigModalities(model.OutputModalities)
 		models = append(models, info)
 	}
 	return models
-}
-
-func normalizeCompatConfigModalities(raw []string) []string {
-	if len(raw) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(raw))
-	seen := make(map[string]struct{}, len(raw))
-	for _, item := range raw {
-		modality := strings.ToLower(strings.TrimSpace(item))
-		if modality == "" {
-			continue
-		}
-		if _, exists := seen[modality]; exists {
-			continue
-		}
-		seen[modality] = struct{}{}
-		out = append(out, modality)
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
 }
 
 func buildConfigModels[T modelEntry](models []T, ownedBy, modelType string) []*ModelInfo {
