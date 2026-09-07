@@ -3,7 +3,12 @@
 Go 1.26+ proxy server providing OpenAI/Gemini/Claude/Codex compatible APIs with OAuth and round-robin load balancing.
 
 ## Repository
-- GitHub: https://github.com/router-for-me/CLIProxyAPI
+- This checkout is a fork. The working repository is https://github.com/bgaeddert/CLIProxyAPI.
+- `origin` is the working repository and `upstream` is the reference repository: https://github.com/router-for-me/CLIProxyAPI.
+- All development work, commits, branches, issues, and pull requests are for `origin` (`bgaeddert/CLIProxyAPI`) unless the user explicitly requests work against `upstream`.
+- Do not file issues or pull requests in `upstream` as part of normal work on this checkout.
+- Treat repository-specific policies inherited from `upstream` as applying to `upstream` only unless this file explicitly says otherwise. If the remotes are unclear, verify them with `git remote -v` before making repository-specific decisions.
+- When using the GitHub CLI, name `bgaeddert/CLIProxyAPI` explicitly; do not rely on an unqualified repository lookup, which may inspect `upstream` in this checkout.
 
 ## Commands
 ```bash
@@ -46,8 +51,7 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 - If editing code that already contains non-English comments, translate them to English (don’t add new non-English comments)
 - For user-visible strings, keep the existing language used in that file/area
 - New Markdown docs should be in English unless the file is explicitly language-specific (e.g. `README_CN.md`)
-- As a rule, do not make standalone changes to `internal/translator/`. You may modify it only as part of broader changes elsewhere.
-- If a task requires changing only `internal/translator/`, run `gh repo view --json viewerPermission -q .viewerPermission` to confirm you have `WRITE`, `MAINTAIN`, or `ADMIN`. If you do, you may proceed; otherwise, file a GitHub issue including the goal, rationale, and the intended implementation code, then stop further work.
+- The following inherited translator policy is upstream-only and does not apply to work targeting this fork: do not make standalone changes to `internal/translator/`, and do not use the `viewerPermission` check as a gate. For this checkout, standalone translator changes may proceed when requested by the user, and work should remain on `origin`.
 - `internal/runtime/executor/` should contain executors and their unit tests only. Place any helper/supporting files under `internal/runtime/executor/helps/`.
 - Follow `gofmt`; keep imports goimports-style; wrap errors with context where helpful
 - Do not use `log.Fatal`/`log.Fatalf` (terminates the process); prefer returning errors and logging via logrus
