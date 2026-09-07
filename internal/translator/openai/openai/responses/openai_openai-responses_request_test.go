@@ -983,6 +983,41 @@ func TestResponsesSingleCustomToolName_CountsDeduplicatedTools(t *testing.T) {
 	}
 }
 
+func TestMergeResponsesRequestChatTools_PreservesOpenRouterWebSearch(t *testing.T) {
+	raw := []byte(`{
+		"tools": [
+			{"type":"function","name":"lookup","parameters":{"type":"object"}},
+			{"type":"openrouter:web_search","parameters":{"engine":"exa","max_results":2}}
+		],
+		"input": [
+			{"type":"additional_tools","tools":[{"type":"openrouter:web_search","parameters":{"engine":"native"}}]}
+		]
+	}`)
+
+	merged := mergeResponsesRequestChatTools(gjson.ParseBytes(raw))
+	if len(merged) != 3 {
+		t.Fatalf("merged tool count = %d, want 3", len(merged))
+	}
+	if got := gjson.GetBytes(merged[0], "function.name").String(); got != "lookup" {
+		t.Fatalf("first merged tool name = %q, want lookup", got)
+	}
+	if got := string(merged[1]); got != `{"type":"openrouter:web_search","parameters":{"engine":"exa","max_results":2}}` {
+		t.Fatalf("top-level server tool was not preserved verbatim: %s", got)
+	}
+	if got := string(merged[2]); got != `{"type":"openrouter:web_search","parameters":{"engine":"native"}}` {
+		t.Fatalf("additional server tool was not preserved verbatim: %s", got)
+	}
+
+	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("openai/gpt-5.6-luna", raw, false)
+	tools := gjson.GetBytes(out, "tools")
+	if len(tools.Array()) != 3 {
+		t.Fatalf("translated tools count = %d, want 3; output=%s", len(tools.Array()), out)
+	}
+	if got := tools.Get("1.type").String(); got != "openrouter:web_search" {
+		t.Fatalf("translated top-level server tool type = %q, want openrouter:web_search; output=%s", got, out)
+	}
+}
+
 func TestSplitResponsesQualifiedFunctionCallFromRequest_FirstDeclarationWins(t *testing.T) {
 	flatFirst := []byte(`{
 		"tools": [

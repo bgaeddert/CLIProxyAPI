@@ -607,6 +607,69 @@ func TestConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream_OmitsTop
 	}
 }
 
+func TestConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream_PreservesProviderMetadata(t *testing.T) {
+	request := []byte(`{"model":"openai/gpt-5.6-luna","tools":[{"type":"openrouter:web_search"}]}`)
+	raw := []byte(`{
+		"id":"chatcmpl_openrouter_search",
+		"object":"chat.completion",
+		"created":1773896263,
+		"model":"openai/gpt-5.6-luna",
+		"choices":[{"index":0,"message":{"role":"assistant","content":"The result is grounded.","annotations":[{"type":"url_citation","url":"https://example.com/source","title":"Source","start_index":4,"end_index":10}]},"finish_reason":"stop"}],
+		"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18,"cost":0.007,"server_tool_use_details":{"web_search_requests":1,"tool_calls_requested":1,"tool_calls_executed":1}}
+	}`)
+
+	resp := ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(context.Background(), "openai/gpt-5.6-luna", request, request, raw, nil)
+	data := gjson.ParseBytes(resp)
+	if got := data.Get("output.0.content.0.annotations.0.type").String(); got != "url_citation" {
+		t.Fatalf("annotation type = %q, want url_citation; response=%s", got, resp)
+	}
+	if got := data.Get("output.0.content.0.annotations.0.url").String(); got != "https://example.com/source" {
+		t.Fatalf("annotation URL = %q, want source URL; response=%s", got, resp)
+	}
+	if got := data.Get("usage.input_tokens").Int(); got != 11 {
+		t.Fatalf("input_tokens = %d, want 11; response=%s", got, resp)
+	}
+	if got := data.Get("usage.output_tokens").Int(); got != 7 {
+		t.Fatalf("output_tokens = %d, want 7; response=%s", got, resp)
+	}
+	if got := data.Get("usage.server_tool_use_details.tool_calls_executed").Int(); got != 1 {
+		t.Fatalf("server tool usage details were dropped; response=%s", resp)
+	}
+	if got := data.Get("usage.cost").Float(); got != 0.007 {
+		t.Fatalf("cost = %f, want 0.007; response=%s", got, resp)
+	}
+}
+
+func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_PreservesStreamingProviderMetadata(t *testing.T) {
+	request := []byte(`{"model":"openai/gpt-5.6-luna","tools":[{"type":"openrouter:web_search"}]}`)
+	chunks := []string{
+		`data: {"id":"chatcmpl_openrouter_stream","object":"chat.completion.chunk","created":1773896263,"model":"openai/gpt-5.6-luna","choices":[{"index":0,"delta":{"role":"assistant","content":"Grounded answer."},"finish_reason":"stop"}]}`,
+		`data: {"id":"chatcmpl_openrouter_stream","object":"chat.completion.chunk","created":1773896263,"model":"openai/gpt-5.6-luna","choices":[],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18,"cost":0.007,"server_tool_use_details":{"web_search_requests":1}}}`,
+		`data: [DONE]`,
+	}
+
+	var param any
+	var completed gjson.Result
+	for _, line := range chunks {
+		for _, chunk := range ConvertOpenAIChatCompletionsResponseToOpenAIResponses(context.Background(), "openai/gpt-5.6-luna", request, request, []byte(line), &param) {
+			event, data := parseOpenAIResponsesSSEEvent(t, chunk)
+			if event == "response.completed" {
+				completed = data
+			}
+		}
+	}
+
+	if !completed.Exists() {
+		t.Fatal("expected response.completed event")
+	}
+	if got := completed.Get("response.usage.server_tool_use_details.web_search_requests").Int(); got != 1 {
+		t.Fatalf("streaming server tool usage details were dropped; completed=%s", completed.Raw)
+	}
+	if got := completed.Get("response.usage.output_tokens").Int(); got != 7 {
+		t.Fatalf("streaming output_tokens = %d, want 7; completed=%s", got, completed.Raw)
+	}
+}
+
 func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_RestoresNamespaceFunctionCall(t *testing.T) {
 	originalRequest := []byte(`{
 		"model":"deepseek-v4-flash",

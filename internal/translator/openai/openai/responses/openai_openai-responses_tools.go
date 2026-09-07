@@ -13,12 +13,15 @@ import (
 // their declared name and the owning namespace, so reverse translation can
 // restore the split identity.
 type responsesToolDeclaration struct {
-	tool      gjson.Result
-	chatName  string
-	localName string
-	namespace string
-	custom    bool
+	tool        gjson.Result
+	chatName    string
+	localName   string
+	namespace   string
+	custom      bool
+	passthrough bool
 }
+
+const openRouterWebSearchToolType = "openrouter:web_search"
 
 // walkResponsesToolDeclarations visits the tool declarations of a Responses
 // request in one canonical order: the top-level "tools" field first, then
@@ -36,23 +39,27 @@ func walkResponsesToolDeclarations(root gjson.Result, visit func(responsesToolDe
 			return
 		}
 		var custom bool
+		passthrough := false
 		switch strings.TrimSpace(tool.Get("type").String()) {
 		case "", "function":
 		case "custom":
 			custom = true
+		case openRouterWebSearchToolType:
+			passthrough = true
 		default:
 			return
 		}
 		localName := responsesToolName(tool)
-		if localName == "" {
+		if !passthrough && localName == "" {
 			return
 		}
 		proceed = visit(responsesToolDeclaration{
-			tool:      tool,
-			chatName:  qualifyResponsesNamespaceToolName(namespaceName, localName),
-			localName: localName,
-			namespace: namespaceName,
-			custom:    custom,
+			tool:        tool,
+			chatName:    qualifyResponsesNamespaceToolName(namespaceName, localName),
+			localName:   localName,
+			namespace:   namespaceName,
+			custom:      custom,
+			passthrough: passthrough,
 		})
 	}
 	scan := func(tools gjson.Result) {
@@ -100,6 +107,13 @@ func mergeResponsesRequestChatTools(root gjson.Result) [][]byte {
 	var merged [][]byte
 	seenToolNames := make(map[string]struct{})
 	walkResponsesToolDeclarations(root, func(declaration responsesToolDeclaration) bool {
+		if declaration.passthrough {
+			// Provider-native server tools have no Chat Completions function name.
+			// Preserve the exact declaration so the compatible provider can
+			// interpret it itself.
+			merged = append(merged, []byte(declaration.tool.Raw))
+			return true
+		}
 		if _, duplicate := seenToolNames[declaration.chatName]; duplicate {
 			return true
 		}
