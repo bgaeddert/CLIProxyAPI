@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -31,6 +32,44 @@ type antigravityTranscriptionTestExecutor struct {
 	options         coreexecutor.Options
 	selectedAuth    *auth.Auth
 	calls           atomic.Int32
+}
+
+type openAICompatTranscriptionTestExecutor struct {
+	responsePayload []byte
+	request         coreexecutor.Request
+	options         coreexecutor.Options
+	selectedAuth    *auth.Auth
+	calls           atomic.Int32
+}
+
+func (*openAICompatTranscriptionTestExecutor) Identifier() string { return "openai-compatible-test" }
+
+func (e *openAICompatTranscriptionTestExecutor) Execute(_ context.Context, selected *auth.Auth, request coreexecutor.Request, options coreexecutor.Options) (coreexecutor.Response, error) {
+	e.calls.Add(1)
+	e.selectedAuth = selected.Clone()
+	e.request = request
+	e.options = options
+	return coreexecutor.Response{Payload: append([]byte(nil), e.responsePayload...)}, nil
+}
+
+func (*openAICompatTranscriptionTestExecutor) ExecuteStream(context.Context, *auth.Auth, coreexecutor.Request, coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	return nil, nil
+}
+
+func (*openAICompatTranscriptionTestExecutor) Refresh(_ context.Context, selected *auth.Auth) (*auth.Auth, error) {
+	return selected.Clone(), nil
+}
+
+func (*openAICompatTranscriptionTestExecutor) CountTokens(context.Context, *auth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, nil
+}
+
+func (*openAICompatTranscriptionTestExecutor) PrepareRequest(*http.Request, *auth.Auth) error {
+	return nil
+}
+
+func (*openAICompatTranscriptionTestExecutor) HttpRequest(context.Context, *auth.Auth, *http.Request) (*http.Response, error) {
+	return nil, nil
 }
 
 func (*antigravityTranscriptionTestExecutor) Identifier() string { return "antigravity" }
@@ -279,6 +318,89 @@ func TestCodexTranscriptionForwardsMultipartAndNormalizesJSON(t *testing.T) {
 	}
 	if response.Text != "hello from Codex" {
 		t.Fatalf("text = %q, want hello from Codex", response.Text)
+	}
+}
+
+func TestOpenAICompatTranscriptionRoutesConfiguredModelAndPreservesMultipart(t *testing.T) {
+	model := "openrouter/asr-test"
+	registryRef := registry.GetGlobalRegistry()
+	clientID := "openai-compat-transcription-auth"
+	registryRef.RegisterClient(clientID, "openai-compatible-test", []*registry.ModelInfo{{
+		ID:                             model,
+		Type:                           registry.OpenAITranscriptionModelType,
+		SupportsTranscriptionEndpoints: true,
+	}})
+	t.Cleanup(func() { registryRef.UnregisterClient(clientID) })
+
+	manager := auth.NewManager(nil, nil, nil)
+	executor := &openAICompatTranscriptionTestExecutor{responsePayload: []byte(`{"text":"hello from OpenRouter"}`)}
+	manager.RegisterExecutor(executor)
+	if _, errRegister := manager.Register(context.Background(), &auth.Auth{
+		ID:       "openai-compat-transcription-auth",
+		Provider: "openai-compatible-test",
+		Status:   auth.StatusActive,
+		Attributes: map[string]string{
+			auth.AttributeAPIKey: "provider-key",
+		},
+		ModelStates: map[string]*auth.ModelState{
+			model: {Status: auth.StatusActive},
+		},
+	}); errRegister != nil {
+		t.Fatalf("register OpenAI-compatible auth: %v", errRegister)
+	}
+
+	recorder := httptest.NewRecorder()
+	gin.SetMode(gin.TestMode)
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = transcriptionRequest(t, map[string]string{
+		"model":           model,
+		"language":        "en",
+		"prompt":          "Prefer digits",
+		"response_format": "json",
+		"temperature":     "0",
+	}, true)
+	newTranscriptionHandler(manager).Handle(context)
+
+	if recorder.Code != http.StatusOK || recorder.Body.String() != `{"text":"hello from OpenRouter"}` {
+		t.Fatalf("response = %d %q, want normalized JSON", recorder.Code, recorder.Body.String())
+	}
+	if executor.calls.Load() != 1 {
+		t.Fatalf("executor calls = %d, want 1", executor.calls.Load())
+	}
+	if executor.selectedAuth == nil || executor.selectedAuth.Provider != "openai-compatible-test" {
+		t.Fatalf("selected auth = %+v, want OpenAI-compatible provider", executor.selectedAuth)
+	}
+	mediaType, params, errParseMedia := mime.ParseMediaType(executor.options.Headers.Get("Content-Type"))
+	if errParseMedia != nil || !strings.HasPrefix(mediaType, "multipart/") {
+		t.Fatalf("executor Content-Type = %q, parse error = %v", executor.options.Headers.Get("Content-Type"), errParseMedia)
+	}
+	form, errReadForm := multipart.NewReader(bytes.NewReader(executor.request.Payload), params["boundary"]).ReadForm(1 << 20)
+	if errReadForm != nil {
+		t.Fatalf("read executor multipart payload: %v", errReadForm)
+	}
+	defer func() { _ = form.RemoveAll() }()
+	formValue := func(key string) string {
+		values := form.Value[key]
+		if len(values) == 0 {
+			return ""
+		}
+		return values[0]
+	}
+	if got := formValue("model"); got != model {
+		t.Fatalf("upstream model = %q, want %q", got, model)
+	}
+	if got := formValue("language"); got != "en" {
+		t.Fatalf("language = %q, want en", got)
+	}
+	if got := formValue("prompt"); got != "Prefer digits" {
+		t.Fatalf("prompt = %q, want prompt", got)
+	}
+	if got := formValue("response_format"); got != "json" {
+		t.Fatalf("response_format = %q, want json", got)
+	}
+	fileHeaders := form.File["file"]
+	if len(fileHeaders) != 1 {
+		t.Fatalf("file count = %d, want 1", len(fileHeaders))
 	}
 }
 
