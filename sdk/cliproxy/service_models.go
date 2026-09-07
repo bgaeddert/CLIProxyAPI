@@ -861,16 +861,13 @@ func buildOpenAICompatibilityConfigModels(compat *config.OpenAICompatibility) []
 	models := make([]*ModelInfo, 0, len(compat.Models))
 	for i := range compat.Models {
 		model := compat.Models[i]
-		modelType := "openai-compatibility"
-		if model.Image {
-			modelType = registry.OpenAIImageModelType
-		}
-		info := buildConfiguredModelInfo(model, compat.Name, modelType, now, strings.TrimSpace(model.Alias), false)
+		info := buildConfiguredModelInfo(model, compat.Name, registry.OpenAICompatibilityModelType, now, strings.TrimSpace(model.Alias), false)
 		if info == nil {
 			continue
 		}
+		modelconfig.ApplyOpenAICompatibilityCapabilities(info, model)
 		thinkingSupport := model.Thinking
-		if thinkingSupport == nil && !model.Image {
+		if thinkingSupport == nil && !model.Image && !model.Transcription {
 			thinkingSupport = &registry.ThinkingSupport{Levels: []string{"low", "medium", "high"}}
 		}
 		if model.Thinking != nil {
@@ -880,8 +877,6 @@ func buildOpenAICompatibilityConfigModels(compat *config.OpenAICompatibility) []
 			info.ExplicitInputModalities = true
 		}
 		info.Thinking = modelconfig.NormalizeThinkingSupport(thinkingSupport)
-		info.SupportedInputModalities = normalizeCompatConfigModalities(model.InputModalities)
-		info.SupportedOutputModalities = normalizeCompatConfigModalities(model.OutputModalities)
 		models = append(models, info)
 	}
 	return models

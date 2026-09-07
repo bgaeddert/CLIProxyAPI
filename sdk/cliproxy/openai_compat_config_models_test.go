@@ -22,16 +22,22 @@ func TestBuildOpenAICompatibilityConfigModels_InputModalities(t *testing.T) {
 				Alias: "compat-image",
 				Image: true,
 			},
+			{
+				Name:          "upstream-transcription",
+				Alias:         "compat-transcription",
+				Transcription: true,
+			},
 		},
 	}
 
 	models := buildOpenAICompatibilityConfigModels(compat)
-	if len(models) != 2 {
-		t.Fatalf("model count = %d, want 2", len(models))
+	if len(models) != 3 {
+		t.Fatalf("model count = %d, want 3", len(models))
 	}
 
 	var vision *ModelInfo
 	var imageModel *ModelInfo
+	var transcriptionModel *ModelInfo
 	for _, model := range models {
 		if model == nil {
 			continue
@@ -41,6 +47,8 @@ func TestBuildOpenAICompatibilityConfigModels_InputModalities(t *testing.T) {
 			vision = model
 		case "compat-image":
 			imageModel = model
+		case "compat-transcription":
+			transcriptionModel = model
 		}
 	}
 	if vision == nil {
@@ -63,6 +71,24 @@ func TestBuildOpenAICompatibilityConfigModels_InputModalities(t *testing.T) {
 	}
 	if len(imageModel.SupportedInputModalities) != 0 {
 		t.Fatalf("image model input modalities = %+v, want none", imageModel.SupportedInputModalities)
+	}
+	if !imageModel.SupportsImageEndpoints || imageModel.SupportsTranscriptionEndpoints {
+		t.Fatalf("image endpoint capabilities = image:%t transcription:%t, want true:false", imageModel.SupportsImageEndpoints, imageModel.SupportsTranscriptionEndpoints)
+	}
+	if transcriptionModel == nil {
+		t.Fatal("expected transcription model")
+	}
+	if transcriptionModel.Type != registry.OpenAITranscriptionModelType {
+		t.Fatalf("transcription model type = %q, want %q", transcriptionModel.Type, registry.OpenAITranscriptionModelType)
+	}
+	if !transcriptionModel.SupportsTranscriptionEndpoints || transcriptionModel.SupportsImageEndpoints {
+		t.Fatalf("transcription endpoint capabilities = image:%t transcription:%t, want false:true", transcriptionModel.SupportsImageEndpoints, transcriptionModel.SupportsTranscriptionEndpoints)
+	}
+	if got := joinModalities(transcriptionModel.SupportedInputModalities); got != "audio" {
+		t.Fatalf("transcription input modalities = %q, want audio", got)
+	}
+	if got := joinModalities(transcriptionModel.SupportedOutputModalities); got != "text" {
+		t.Fatalf("transcription output modalities = %q, want text", got)
 	}
 }
 
