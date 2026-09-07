@@ -49,6 +49,7 @@ type oaiToResponsesState struct {
 	FuncArgsSent          map[string]int
 	MsgOutputIx           map[int]int
 	NextOutputIx          int
+	MsgAnnotations map[int][][]byte
 	// message item state per output index
 	MsgItemAdded    map[int]bool // whether response.output_item.added emitted for message
 	MsgContentAdded map[int]bool // whether response.content_part.added emitted for message
@@ -69,6 +70,30 @@ type oaiToResponsesState struct {
 	TotalTokens      int64
 	ReasoningTokens  int64
 	UsageSeen        bool
+	UsageRaw         []byte
+}
+
+func appendRawAnnotations(existing [][]byte, annotations gjson.Result) [][]byte {
+	if !annotations.Exists() {
+		return existing
+	}
+	if annotations.IsArray() {
+		annotations.ForEach(func(_, annotation gjson.Result) bool {
+			if annotation.Exists() {
+				existing = append(existing, []byte(annotation.Raw))
+			}
+			return true
+		})
+		return existing
+	}
+	return append(existing, []byte(annotations.Raw))
+}
+
+func joinRawAnnotations(annotations [][]byte) []byte {
+	if len(annotations) == 0 {
+		return nil
+	}
+	return translatorcommon.JoinRawArray(annotations)
 }
 
 // responseIDCounter provides a process-wide unique counter for synthesized response identifiers.
@@ -345,6 +370,9 @@ func buildResponsesCompletedEvent(st *oaiToResponsesState, nextSeq func() int) [
 			item, _ = sjson.SetBytes(item, "id", fmt.Sprintf("msg_%s_%d", st.ResponseID, i))
 			item, _ = sjson.SetBytes(item, "status", msgStatus)
 			item, _ = sjson.SetBytes(item, "content.0.text", txt)
+			if annotations := joinRawAnnotations(st.MsgAnnotations[i]); len(annotations) > 0 {
+				item, _ = sjson.SetRawBytes(item, "content.0.annotations", annotations)
+			}
 			outputItems = append(outputItems, completedOutputItem{index: st.MsgOutputIx[i], raw: item})
 		}
 	}
@@ -403,6 +431,9 @@ func buildResponsesCompletedEvent(st *oaiToResponsesState, nextSeq func() int) [
 	if len(outputs) > 0 {
 		completed, _ = sjson.SetRawBytes(completed, "response.output", translatorcommon.JoinRawArray(outputs))
 	}
+	if len(st.UsageRaw) > 0 {
+		completed, _ = sjson.SetRawBytes(completed, "response.usage", st.UsageRaw)
+	}
 	if st.UsageSeen {
 		completed, _ = sjson.SetBytes(completed, "response.usage.input_tokens", st.PromptTokens)
 		completed, _ = sjson.SetBytes(completed, "response.usage.input_tokens_details.cached_tokens", st.CachedTokens)
@@ -431,6 +462,7 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 			FuncArgsSent:    make(map[string]int),
 			MsgOutputIx:     make(map[int]int),
 			MsgTextBuf:      make(map[int]*strings.Builder),
+			MsgAnnotations:  make(map[int][][]byte),
 			MsgItemAdded:    make(map[int]bool),
 			MsgContentAdded: make(map[int]bool),
 			MsgItemDone:     make(map[int]bool),
@@ -473,35 +505,6 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 		}
 		if !root.Get("choices").Exists() || !root.Get("choices").IsArray() {
 			return [][]byte{}
-		}
-	}
-
-	if usage := root.Get("usage"); usage.Exists() {
-		if v := usage.Get("prompt_tokens"); v.Exists() {
-			st.PromptTokens = v.Int()
-			st.UsageSeen = true
-		}
-		if v := usage.Get("prompt_tokens_details.cached_tokens"); v.Exists() {
-			st.CachedTokens = v.Int()
-			st.UsageSeen = true
-		}
-		if v := usage.Get("completion_tokens"); v.Exists() {
-			st.CompletionTokens = v.Int()
-			st.UsageSeen = true
-		} else if v := usage.Get("output_tokens"); v.Exists() {
-			st.CompletionTokens = v.Int()
-			st.UsageSeen = true
-		}
-		if v := usage.Get("output_tokens_details.reasoning_tokens"); v.Exists() {
-			st.ReasoningTokens = v.Int()
-			st.UsageSeen = true
-		} else if v := usage.Get("completion_tokens_details.reasoning_tokens"); v.Exists() {
-			st.ReasoningTokens = v.Int()
-			st.UsageSeen = true
-		}
-		if v := usage.Get("total_tokens"); v.Exists() {
-			st.TotalTokens = v.Int()
-			st.UsageSeen = true
 		}
 	}
 
@@ -616,6 +619,7 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 		st.Created = root.Get("created").Int()
 		// reset aggregation state for a new streaming response
 		st.MsgTextBuf = make(map[int]*strings.Builder)
+		st.MsgAnnotations = make(map[int][][]byte)
 		st.ReasoningBuf.Reset()
 		st.ReasoningID = ""
 		st.ReasoningIndex = 0
@@ -643,6 +647,7 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 		st.ReasoningTokens = 0
 		st.FinishReason = ""
 		st.UsageSeen = false
+		st.UsageRaw = nil
 		st.CompletedEmitted = false
 		st.CompletionPending = false
 		// response.created
@@ -668,6 +673,38 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 		}
 		out = append(out, emitRespEvent("response.in_progress", inprog))
 		st.Started = true
+	}
+
+	if usage := root.Get("usage"); usage.Exists() {
+		if usage.IsObject() {
+			st.UsageRaw = append(st.UsageRaw[:0], []byte(usage.Raw)...)
+		}
+		if v := usage.Get("prompt_tokens"); v.Exists() {
+			st.PromptTokens = v.Int()
+			st.UsageSeen = true
+		}
+		if v := usage.Get("prompt_tokens_details.cached_tokens"); v.Exists() {
+			st.CachedTokens = v.Int()
+			st.UsageSeen = true
+		}
+		if v := usage.Get("completion_tokens"); v.Exists() {
+			st.CompletionTokens = v.Int()
+			st.UsageSeen = true
+		} else if v := usage.Get("output_tokens"); v.Exists() {
+			st.CompletionTokens = v.Int()
+			st.UsageSeen = true
+		}
+		if v := usage.Get("output_tokens_details.reasoning_tokens"); v.Exists() {
+			st.ReasoningTokens = v.Int()
+			st.UsageSeen = true
+		} else if v := usage.Get("completion_tokens_details.reasoning_tokens"); v.Exists() {
+			st.ReasoningTokens = v.Int()
+			st.UsageSeen = true
+		}
+		if v := usage.Get("total_tokens"); v.Exists() {
+			st.TotalTokens = v.Int()
+			st.UsageSeen = true
+		}
 	}
 
 	stopReasoning := func(text string) {
@@ -718,6 +755,9 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 		partDone, _ = sjson.SetBytes(partDone, "output_index", msgOutputIndex)
 		partDone, _ = sjson.SetBytes(partDone, "content_index", 0)
 		partDone, _ = sjson.SetBytes(partDone, "part.text", fullText)
+		if annotations := joinRawAnnotations(st.MsgAnnotations[idx]); len(annotations) > 0 {
+			partDone, _ = sjson.SetRawBytes(partDone, "part.annotations", annotations)
+		}
 		out = append(out, emitRespEvent("response.content_part.done", partDone))
 
 		msgStatus := "completed"
@@ -730,6 +770,9 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 		itemDone, _ = sjson.SetBytes(itemDone, "item.id", fmt.Sprintf("msg_%s_%d", st.ResponseID, idx))
 		itemDone, _ = sjson.SetBytes(itemDone, "item.status", msgStatus)
 		itemDone, _ = sjson.SetBytes(itemDone, "item.content.0.text", fullText)
+		if annotations := joinRawAnnotations(st.MsgAnnotations[idx]); len(annotations) > 0 {
+			itemDone, _ = sjson.SetRawBytes(itemDone, "item.content.0.annotations", annotations)
+		}
 		out = append(out, emitRespEvent("response.output_item.done", itemDone))
 		st.MsgItemDone[idx] = true
 	}
@@ -910,6 +953,12 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 			idx := int(choice.Get("index").Int())
 			delta := choice.Get("delta")
 			if delta.Exists() {
+				for _, path := range []string{"annotations", "content.0.annotations"} {
+					if annotations := delta.Get(path); annotations.Exists() {
+						st.MsgAnnotations[idx] = appendRawAnnotations(st.MsgAnnotations[idx], annotations)
+					}
+				}
+
 				// reasoning_content (OpenAI reasoning incremental text)
 				rc := delta.Get("reasoning_content")
 				if !rc.Exists() || rc.String() == "" {
@@ -940,7 +989,6 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 					msg, _ = sjson.SetBytes(msg, "delta", rc.String())
 					out = append(out, emitRespEvent("response.reasoning_summary_text.delta", msg))
 				}
-
 				if c := delta.Get("content"); c.Exists() && c.String() != "" {
 					// Ensure the message item and its first content part are announced before any text deltas
 					if st.ReasoningID != "" {
@@ -1028,6 +1076,9 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 						return st.ToolInputError() == nil
 					})
 				}
+			}
+			if annotations := choice.Get("message.annotations"); annotations.Exists() {
+				st.MsgAnnotations[idx] = appendRawAnnotations(st.MsgAnnotations[idx], annotations)
 			}
 
 			if st.ToolInputError() != nil {
@@ -1148,6 +1199,9 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(_ context.Co
 					item, _ = sjson.SetBytes(item, "id", fmt.Sprintf("msg_%s_%d", id, int(choice.Get("index").Int())))
 					item, _ = sjson.SetBytes(item, "status", itemStatus)
 					item, _ = sjson.SetBytes(item, "content.0.text", c.String())
+					if annotations := msg.Get("annotations"); annotations.Exists() {
+						item, _ = sjson.SetRawBytes(item, "content.0.annotations", []byte(annotations.Raw))
+					}
 					outputItems = append(outputItems, item)
 				}
 
@@ -1220,25 +1274,28 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(_ context.Co
 	}
 
 	// usage mapping
-	if usage := root.Get("usage"); usage.Exists() {
-		// Map common tokens
-		if usage.Get("prompt_tokens").Exists() || usage.Get("completion_tokens").Exists() || usage.Get("total_tokens").Exists() {
-			resp, _ = sjson.SetBytes(resp, "usage.input_tokens", usage.Get("prompt_tokens").Int())
-			if d := usage.Get("prompt_tokens_details.cached_tokens"); d.Exists() {
-				resp, _ = sjson.SetBytes(resp, "usage.input_tokens_details.cached_tokens", d.Int())
-			}
-			resp, _ = sjson.SetBytes(resp, "usage.output_tokens", usage.Get("completion_tokens").Int())
-			// Chat Completions upstreams report reasoning under completion_tokens_details;
-			// Responses-native upstreams report it under output_tokens_details. Accept both.
-			if d := usage.Get("output_tokens_details.reasoning_tokens"); d.Exists() {
-				resp, _ = sjson.SetBytes(resp, "usage.output_tokens_details.reasoning_tokens", d.Int())
-			} else if d := usage.Get("completion_tokens_details.reasoning_tokens"); d.Exists() {
-				resp, _ = sjson.SetBytes(resp, "usage.output_tokens_details.reasoning_tokens", d.Int())
-			}
-			resp, _ = sjson.SetBytes(resp, "usage.total_tokens", usage.Get("total_tokens").Int())
-		} else {
-			// Fallback to raw usage object if structure differs
-			resp, _ = sjson.SetBytes(resp, "usage", usage.Value())
+	if usage := root.Get("usage"); usage.Exists() && usage.IsObject() {
+		// Start with the provider's complete usage object so extensions such as
+		// OpenRouter server-tool and cost metadata survive normalization.
+		resp, _ = sjson.SetRawBytes(resp, "usage", []byte(usage.Raw))
+		if v := usage.Get("prompt_tokens"); v.Exists() {
+			resp, _ = sjson.SetBytes(resp, "usage.input_tokens", v.Int())
+		}
+		if d := usage.Get("prompt_tokens_details.cached_tokens"); d.Exists() {
+			resp, _ = sjson.SetBytes(resp, "usage.input_tokens_details.cached_tokens", d.Int())
+		}
+		if v := usage.Get("completion_tokens"); v.Exists() {
+			resp, _ = sjson.SetBytes(resp, "usage.output_tokens", v.Int())
+		} else if v := usage.Get("output_tokens"); v.Exists() {
+			resp, _ = sjson.SetBytes(resp, "usage.output_tokens", v.Int())
+		}
+		if d := usage.Get("output_tokens_details.reasoning_tokens"); d.Exists() {
+			resp, _ = sjson.SetBytes(resp, "usage.output_tokens_details.reasoning_tokens", d.Int())
+		} else if d := usage.Get("completion_tokens_details.reasoning_tokens"); d.Exists() {
+			resp, _ = sjson.SetBytes(resp, "usage.output_tokens_details.reasoning_tokens", d.Int())
+		}
+		if v := usage.Get("total_tokens"); v.Exists() {
+			resp, _ = sjson.SetBytes(resp, "usage.total_tokens", v.Int())
 		}
 	}
 

@@ -112,6 +112,10 @@ func (idx *responsesToolIndex) chatTools() [][]byte {
 	var merged [][]byte
 	seen := make(map[string]struct{})
 	for _, d := range idx.declarations {
+		if d.passthrough {
+			merged = append(merged, []byte(d.tool.Raw))
+			continue
+		}
 		if _, exists := seen[d.chatName]; exists {
 			continue
 		}

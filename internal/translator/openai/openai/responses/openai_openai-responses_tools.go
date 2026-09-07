@@ -21,7 +21,10 @@ type responsesToolDeclaration struct {
 	namespace string
 	custom    bool
 	shell     bool
+	passthrough bool
 }
+
+const openRouterWebSearchToolType = "openrouter:web_search"
 
 // walkResponsesToolDeclarations visits the tool declarations of a Responses
 // request in one canonical order: the top-level "tools" field first, then
@@ -38,6 +41,7 @@ func walkResponsesToolDeclarations(root gjson.Result, visit func(responsesToolDe
 	var declarations []responsesToolDeclaration
 	emit := func(tool gjson.Result, namespaceName string) {
 		var custom, shell bool
+		passthrough := false
 		switch strings.TrimSpace(tool.Get("type").String()) {
 		case "", "function":
 		case "custom":
@@ -47,6 +51,8 @@ func walkResponsesToolDeclarations(root gjson.Result, visit func(responsesToolDe
 				return
 			}
 			shell = true
+		case openRouterWebSearchToolType:
+			passthrough = true
 		default:
 			return
 		}
@@ -54,7 +60,7 @@ func walkResponsesToolDeclarations(root gjson.Result, visit func(responsesToolDe
 		if shell {
 			localName = "__cpa_local_shell"
 		}
-		if localName == "" {
+		if !passthrough && localName == "" {
 			return
 		}
 		declarations = append(declarations, responsesToolDeclaration{
@@ -64,6 +70,7 @@ func walkResponsesToolDeclarations(root gjson.Result, visit func(responsesToolDe
 			namespace: namespaceName,
 			custom:    custom,
 			shell:     shell,
+			passthrough: passthrough,
 		})
 	}
 	scan := func(tools gjson.Result) {
