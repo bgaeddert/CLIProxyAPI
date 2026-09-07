@@ -15,14 +15,17 @@ import (
 // their declared name and the owning namespace, so reverse translation can
 // restore the split identity.
 type responsesToolDeclaration struct {
-	tool      ojson.Result
-	chatName  string
-	localName string
-	namespace string
-	custom    bool
-	shell     bool
-	search    bool // client tool_search, bridged as a function
+	tool        ojson.Result
+	chatName    string
+	localName   string
+	namespace   string
+	custom      bool
+	shell       bool
+	search      bool // client tool_search, bridged as a function
+	passthrough bool
 }
+
+const openRouterWebSearchToolType = "openrouter:web_search"
 
 // walkResponsesToolDeclarations visits the tool declarations of a Responses
 // request in one canonical order: the top-level "tools" field first, then
@@ -38,7 +41,7 @@ type responsesToolDeclaration struct {
 func walkResponsesToolDeclarations(root ojson.Result, visit func(responsesToolDeclaration) bool) {
 	var declarations []responsesToolDeclaration
 	emit := func(tool ojson.Result, namespaceName string) {
-		var custom, shell, search bool
+		var custom, shell, search, passthrough bool
 		switch strings.TrimSpace(tool.Get("type").String()) {
 		case "", "function":
 		case "custom":
@@ -53,6 +56,8 @@ func walkResponsesToolDeclarations(root ojson.Result, visit func(responsesToolDe
 				return
 			}
 			search = true
+		case openRouterWebSearchToolType:
+			passthrough = true
 		default:
 			return
 		}
@@ -62,17 +67,18 @@ func walkResponsesToolDeclarations(root ojson.Result, visit func(responsesToolDe
 		} else if search {
 			localName = util.ResponsesToolSearchFunctionName
 		}
-		if localName == "" {
+		if !passthrough && localName == "" {
 			return
 		}
 		declarations = append(declarations, responsesToolDeclaration{
-			tool:      tool,
-			chatName:  qualifyResponsesNamespaceToolName(namespaceName, localName),
-			localName: localName,
-			namespace: namespaceName,
-			custom:    custom,
-			shell:     shell,
-			search:    search,
+			tool:        tool,
+			chatName:    qualifyResponsesNamespaceToolName(namespaceName, localName),
+			localName:   localName,
+			namespace:   namespaceName,
+			custom:      custom,
+			shell:       shell,
+			search:      search,
+			passthrough: passthrough,
 		})
 	}
 	scan := func(tools ojson.Result) {
