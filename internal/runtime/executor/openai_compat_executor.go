@@ -31,14 +31,14 @@ import (
 )
 
 const (
-	openAICompatImageHandlerType            = "openai-image"
-	openAICompatImagesGenerationsPath       = "/images/generations"
-	openAICompatImagesEditsPath             = "/images/edits"
-	openAICompatDefaultImageEndpoint        = openAICompatImagesGenerationsPath
-	openAICompatMultipartMemory       int64 = 32 << 20
-	openAICompatDefaultUserAgent            = "cli-proxy-openai-compat"
-	openAICompatTranscriptionHandlerType = "openai-transcription"
-	openAICompatTranscriptionPath = "/audio/transcriptions"
+	openAICompatImageHandlerType               = "openai-image"
+	openAICompatImagesGenerationsPath          = "/images/generations"
+	openAICompatImagesEditsPath                = "/images/edits"
+	openAICompatDefaultImageEndpoint           = openAICompatImagesGenerationsPath
+	openAICompatMultipartMemory          int64 = 32 << 20
+	openAICompatDefaultUserAgent               = "cli-proxy-openai-compat"
+	openAICompatTranscriptionHandlerType       = "openai-transcription"
+	openAICompatTranscriptionPath              = "/audio/transcriptions"
 )
 
 func ensureOpenAICompatUserAgent(r *http.Request, clientHeaders ...http.Header) {

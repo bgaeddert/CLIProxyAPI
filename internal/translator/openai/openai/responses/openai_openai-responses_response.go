@@ -49,7 +49,7 @@ type oaiToResponsesState struct {
 	FuncArgsSent          map[string]int
 	MsgOutputIx           map[int]int
 	NextOutputIx          int
-	MsgAnnotations map[int][][]byte
+	MsgAnnotations        map[int][][]byte
 	// message item state per output index
 	MsgItemAdded    map[int]bool // whether response.output_item.added emitted for message
 	MsgContentAdded map[int]bool // whether response.content_part.added emitted for message

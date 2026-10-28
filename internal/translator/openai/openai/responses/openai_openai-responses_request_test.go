@@ -1303,7 +1303,10 @@ func TestMergeResponsesRequestChatTools_PreservesOpenRouterWebSearch(t *testing.
 		t.Fatalf("additional server tool was not preserved verbatim: %s", got)
 	}
 
-	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("openai/gpt-5.6-luna", raw, false)
+	out, err := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("openai/gpt-5.6-luna", raw, false)
+	if err != nil {
+		t.Fatalf("translate request: %v", err)
+	}
 	tools := gjson.GetBytes(out, "tools")
 	if len(tools.Array()) != 3 {
 		t.Fatalf("translated tools count = %d, want 3; output=%s", len(tools.Array()), out)

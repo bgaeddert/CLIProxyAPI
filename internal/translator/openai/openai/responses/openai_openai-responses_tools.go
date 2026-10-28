@@ -15,12 +15,12 @@ import (
 // their declared name and the owning namespace, so reverse translation can
 // restore the split identity.
 type responsesToolDeclaration struct {
-	tool      gjson.Result
-	chatName  string
-	localName string
-	namespace string
-	custom    bool
-	shell     bool
+	tool        gjson.Result
+	chatName    string
+	localName   string
+	namespace   string
+	custom      bool
+	shell       bool
 	passthrough bool
 }
 
@@ -64,12 +64,12 @@ func walkResponsesToolDeclarations(root gjson.Result, visit func(responsesToolDe
 			return
 		}
 		declarations = append(declarations, responsesToolDeclaration{
-			tool:      tool,
-			chatName:  qualifyResponsesNamespaceToolName(namespaceName, localName),
-			localName: localName,
-			namespace: namespaceName,
-			custom:    custom,
-			shell:     shell,
+			tool:        tool,
+			chatName:    qualifyResponsesNamespaceToolName(namespaceName, localName),
+			localName:   localName,
+			namespace:   namespaceName,
+			custom:      custom,
+			shell:       shell,
 			passthrough: passthrough,
 		})
 	}
