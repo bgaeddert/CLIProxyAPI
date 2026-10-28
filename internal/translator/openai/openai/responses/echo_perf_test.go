@@ -52,18 +52,16 @@ func echoRequests() []struct {
 	}
 }
 
-// Golden hashes captured from the pre-optimization implementation; the
-// single-pass echo extraction must keep stream and non-stream outputs
-// byte-identical.
+// Golden hashes cover request echo extraction and the preserved provider usage metadata.
 var echoGoldenHashes = map[string][2]string{
-	"nil":             {"12e174a662e5387285c18447eacd8f21802f391689b43a855718bd3a7962a8d2", "1c76155d2c138f38f71aeb380c3bfc873486725a0a3da29d1484461831b729cc"},
-	"empty-object":    {"12e174a662e5387285c18447eacd8f21802f391689b43a855718bd3a7962a8d2", "1c76155d2c138f38f71aeb380c3bfc873486725a0a3da29d1484461831b729cc"},
-	"malformed":       {"12e174a662e5387285c18447eacd8f21802f391689b43a855718bd3a7962a8d2", "1c76155d2c138f38f71aeb380c3bfc873486725a0a3da29d1484461831b729cc"},
-	"full":            {"211b3a1fca607e01a1414e8cdefd2356369c5881284c09148ba2ac22df6b469f", "d9f230169b59ea6c2ab91910f9161656139cde3c44df55dee7c615798f5a687b"},
-	"weird-types":     {"b09dc247fa502d2dab743a6a8eb0f09e0c99bf4da1b231f1db2843d25a93deee", "42ec2fafcf76c77924dafdfabef14d7df28da2166f4a50c20f1be5217a5ca907"},
-	"duplicate-keys":  {"a446996117b660ec33d1f59b669295486de62d2b273f9bd9d7932f32a01fbbcf", "b65bee2aeb837e91af32ceecc962e92d06db59a1184461c4bd53fe337a892a4f"},
-	"escaped-key":     {"c1183fc24b5774533d05e66db7c43725ab4757de1df267b858afd401f6fe3004", "290d5be1207223112672ee6d9cfe7abc4d6b6d9f03a3b05c46ff83a2e63d9fd2"},
-	"max-tokens-only": {"6326707a3383eb6227783564451eb7efa40f0c2fa10fec8dc99f3ac24390f3f3", "aed55068cbdb234de859841ffcdbd87098938f4c59d62d03b12d510f4fca109c"},
+	"nil":             {"32385f68115ca05269d70aecb6b84cb913d16eae5151eb1624a4c7884981477a", "25aeb82ad9908c1917a40c390ad10bf56796b2573d762227d7f07c0a4d0e3846"},
+	"empty-object":    {"32385f68115ca05269d70aecb6b84cb913d16eae5151eb1624a4c7884981477a", "25aeb82ad9908c1917a40c390ad10bf56796b2573d762227d7f07c0a4d0e3846"},
+	"malformed":       {"32385f68115ca05269d70aecb6b84cb913d16eae5151eb1624a4c7884981477a", "25aeb82ad9908c1917a40c390ad10bf56796b2573d762227d7f07c0a4d0e3846"},
+	"full":            {"da9d0979eb12b0ebd467f3c832db970c25eb6fcff17a33d55dc2bfcf2de0059e", "a24d885bfc0c80fd8dcbcd25b2d012edd018727ede100492a086c917b51367c0"},
+	"weird-types":     {"d92c0fae28c40b6b0a249eff1f735d846d3fddd79b3d82085ef2151c0f4e9a6a", "a8754e66915cd73ed5eedb6d0717eb3d31151c2fc7f482ae93fdf8ebfe618476"},
+	"duplicate-keys":  {"690b195baa35f2f3733886ec2ec9767ce475ac0335c0a5c066f1fd0e881d47df", "d1691fa385ea3405b977956c1a8477a28a38f5908e00ff765878349580afaa1c"},
+	"escaped-key":     {"81326debd48e496dbbb6f1f67697ab8e18477a985da02dc3d371da293f1d5b3a", "c856f1cfee5c287bcf946a2f42f7c01b32bc4f0b6ff4033403ab9df3326eeed7"},
+	"max-tokens-only": {"755a6ddbc50d10e1c1fafe8047423f88395b38560c437fcc780fee3ba27bcd7a", "dd933d6e693b93970b728fe556f434e59965003095fd169f3e1908755cf6b0d2"},
 }
 
 func hashHex(b []byte) string {
@@ -99,28 +97,27 @@ func BenchmarkResponsesEchoShortStreams(b *testing.B) {
 	}
 }
 
-// Golden hashes for root-shape and reasoning-inclusion edge cases, also
-// captured from the pre-optimization implementation.
+// Golden hashes for root-shape and reasoning-inclusion edge cases.
 func TestResponsesEchoGoldenEdgeCases(t *testing.T) {
 	for name, req := range map[string][]byte{
 		"array-root":  []byte(`[{"model":"x"}]`),
 		"scalar-root": []byte(`"hello"`),
 		"number-root": []byte(`42`),
 	} {
-		if got := hashHex(runEchoStream(req)); got != "12e174a662e5387285c18447eacd8f21802f391689b43a855718bd3a7962a8d2" {
+		if got := hashHex(runEchoStream(req)); got != "32385f68115ca05269d70aecb6b84cb913d16eae5151eb1624a4c7884981477a" {
 			t.Errorf("%s stream: hash %s", name, got)
 		}
 		resp := []byte(`{"id":"c1","created":1700000000,"model":"m","choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
 		var p any
-		if got := hashHex(ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(context.Background(), "test", req, req, resp, &p)); got != "b934f12c0c7cda0dc4d68ce8a849c70627249fd9f21f3a08754cad2d775b40c4" {
+		if got := hashHex(ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(context.Background(), "test", req, req, resp, &p)); got != "dd692977eabc936838864cb4bad57311e9414956ba8362375ce324804afbea70" {
 			t.Errorf("%s nonstream: hash %s", name, got)
 		}
 	}
 	respNoRC := []byte(`{"id":"c2","created":1700000000,"model":"m","choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
 	want := map[string]string{
-		"req-with-reasoning":    "f6685c62154ff44ea0f90a1b5f1ee216dc27ddd20cae0d978f321b427c9727e6",
-		"req-without-reasoning": "7465142d0300dcf9add250456693b76fbef1f1bb001aa57b7db47cc63ddc024d",
-		"req-reasoning-null":    "1b4b449220acfdc810fa81e264e8559939f9b9ac79fa1097cd4ca09741665fde",
+		"req-with-reasoning":    "62ddf67a2e7e2804407045b44f5d3d05f534b2699e3c1d45f497a2d277a23707",
+		"req-without-reasoning": "59ce4f145470320095f8c5261c64c1f02727afc1ddcbfcfa9f4324ea735e64c5",
+		"req-reasoning-null":    "16097b4434a3774873ea9a026656fd35bd4872ff119134d4073047caca245098",
 	}
 	for name, req := range map[string][]byte{
 		"req-with-reasoning":    []byte(`{"model":"gpt-5","reasoning":{"effort":"low"},"input":[]}`),

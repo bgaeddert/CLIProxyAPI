@@ -621,7 +621,7 @@ func TestConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream_Preserve
 	}`)
 
 	resp := ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(context.Background(), "openai/gpt-5.6-luna", request, request, raw, nil)
-	data := gjson.ParseBytes(resp)
+	data := util.ParseGJSONBytesNoCopy(resp)
 	if got := data.Get("output.0.content.0.annotations.0.type").String(); got != "url_citation" {
 		t.Fatalf("annotation type = %q, want url_citation; response=%s", got, resp)
 	}
@@ -651,7 +651,7 @@ func TestConvertOpenAIChatCompletionsResponseToOpenAIResponses_PreservesStreamin
 	}
 
 	var param any
-	var completed gjson.Result
+	var completed ojson.Result
 	for _, line := range chunks {
 		for _, chunk := range ConvertOpenAIChatCompletionsResponseToOpenAIResponses(context.Background(), "openai/gpt-5.6-luna", request, request, []byte(line), &param) {
 			event, data := parseOpenAIResponsesSSEEvent(t, chunk)

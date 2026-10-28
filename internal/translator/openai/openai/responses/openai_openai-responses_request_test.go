@@ -1290,11 +1290,11 @@ func TestMergeResponsesRequestChatTools_PreservesOpenRouterWebSearch(t *testing.
 		]
 	}`)
 
-	merged := mergeResponsesRequestChatTools(gjson.ParseBytes(raw))
+	merged := mergeResponsesRequestChatTools(util.ParseGJSONBytesNoCopy(raw))
 	if len(merged) != 3 {
 		t.Fatalf("merged tool count = %d, want 3", len(merged))
 	}
-	if got := gjson.GetBytes(merged[0], "function.name").String(); got != "lookup" {
+	if got := ojson.GetBytesNoCopy(merged[0], "function.name").String(); got != "lookup" {
 		t.Fatalf("first merged tool name = %q, want lookup", got)
 	}
 	if got := string(merged[1]); got != `{"type":"openrouter:web_search","parameters":{"engine":"exa","max_results":2}}` {
@@ -1304,8 +1304,11 @@ func TestMergeResponsesRequestChatTools_PreservesOpenRouterWebSearch(t *testing.
 		t.Fatalf("additional server tool was not preserved verbatim: %s", got)
 	}
 
-	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("openai/gpt-5.6-luna", raw, false)
-	tools := gjson.GetBytes(out, "tools")
+	out, err := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("openai/gpt-5.6-luna", raw, false)
+	if err != nil {
+		t.Fatalf("translate request: %v", err)
+	}
+	tools := ojson.GetBytesNoCopy(out, "tools")
 	if len(tools.Array()) != 3 {
 		t.Fatalf("translated tools count = %d, want 3; output=%s", len(tools.Array()), out)
 	}
